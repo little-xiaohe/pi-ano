@@ -1,0 +1,11 @@
+Adafruit-Blinka==8.67.0
+Adafruit-Blinka-Raspberry-Pi5-Neopixel==1.0.0rc2
+
+adafruit-circuitpython-busdevice==5.2.14
+adafruit-circuitpython-pixelbuf==2.0.10
+adafruit-circuitpython-neopixel==6.3.18
+adafruit-circuitpython-led-animation==2.12.4
+
+pyserial==3.5
+psutil==5.9.4
+

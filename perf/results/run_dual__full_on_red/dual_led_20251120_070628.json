@@ -1,0 +1,17 @@
+{
+    "samples_rtt": 500,
+    "avg_rtt_ms": 25.349881304,
+    "median_rtt_ms": 25.1561885,
+    "max_rtt_ms": 27.761619,
+    "p95_rtt_ms": 27.207525,
+    "p99_rtt_ms": 27.358719,
+    "sleep_interval_s": 0.02,
+    "uart_port": "/dev/ttyAMA3",
+    "baud": 115200,
+    "samples_pico": 500,
+    "pico_avg_ms": 16.867107999999998,
+    "pico_median_ms": 15.625,
+    "pico_max_ms": 19.531,
+    "pico_p95_ms": 19.531,
+    "pico_p99_ms": 19.531
+}

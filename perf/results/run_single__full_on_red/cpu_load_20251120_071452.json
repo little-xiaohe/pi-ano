@@ -1,0 +1,7 @@
+{
+    "samples": 15,
+    "avg_cpu_percent": 1.04,
+    "max_cpu_percent": 2.0,
+    "duration_s": 15.0,
+    "interval_s": 1.0
+}
