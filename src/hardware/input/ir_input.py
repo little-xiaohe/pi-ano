@@ -59,7 +59,7 @@ class IRInput:
             board.D20,   # Sensor 1 → KeyId.KEY_1
             board.D16,  # Sensor 2 → KeyId.KEY_2
             board.D26,  # Sensor 3 → KeyId.KEY_3
-            # board.D26,  # Sensor 4 → KeyId.KEY_4
+            board.D12,  # Sensor 4 → KeyId.KEY_4
         ]
 
         # Which key each sensor controls
@@ -68,12 +68,12 @@ class IRInput:
             KeyId.KEY_1,
             KeyId.KEY_2,
             KeyId.KEY_3,
-            # KeyId.KEY_4,
+            KeyId.KEY_4,
         ]
 
         # I2C addresses to assign to sensors (must be unique)
         # addresses = [0x30, 0x31, 0x32, 0x33, 0x34]
-        addresses = [0x30, 0x31, 0x32, 0x33]
+        addresses = [0x30, 0x31, 0x32, 0x33, 0x34]
     
         if len(xshut_pins) != len(key_map) or len(key_map) != len(addresses):
             raise ValueError("xshut_pins, key_map, addresses length must match")
