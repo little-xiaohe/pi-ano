@@ -10,17 +10,22 @@ from src.hardware.config.keys import KeyId
 class EventType(Enum):
     NOTE_ON = auto()
     NOTE_OFF = auto()
-    MODE_SWITCH = auto()
-    NEXT_SONG = auto()   # ← 一定要有這個
+    MODE_SWITCH = auto()   # keyboard: mode piano / mode song ...
+    NEXT_SONG = auto()     # keyboard: next （song mode 用）
+    NEXT_MODE = auto()     # button: 長按 D14 → 切到下一個 mode
 
 
 @dataclass
 class InputEvent:
     type: EventType
 
-    # for NOTE_ON / NOTE_OFF
+    # 對 NOTE_ON / NOTE_OFF 有用
     key: Optional[KeyId] = None
     velocity: float = 1.0
 
-    # for MODE_SWITCH
+    # 對 MODE_SWITCH 有用
     mode_name: Optional[str] = None
+
+    # 來源標記（"keyboard" / "button" / "ir"...），可以不填
+    source: Optional[str] = None
+

@@ -23,7 +23,7 @@ class InputController:
             KeyboardInput() if use_keyboard else None
         )
         self.buttons: Optional[ButtonInput] = (
-            ButtonInput() if use_buttons else None
+            ButtonInput(debug=False) if use_buttons else None
         )
         self.ir: Optional[IRInput] = IRInput(debug=False) if use_ir else None
 

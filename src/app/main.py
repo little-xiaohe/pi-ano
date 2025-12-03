@@ -22,15 +22,14 @@ def main() -> None:
     # --- modes ---
     chiikawa = ChiikawaMode(led)
     piano = PianoMode(led, audio=audio)
-    rhythm = RhythmMode(led)
+    rhythm = RhythmMode(led, audio=audio)
     song = MidiSongMode(led, audio=audio, loop_playlist=True)
 
     # --- input devices ---
-    # IR 在 song mode 會暫時停用（下面 main loop 會控制）
     input_controller = InputController(
         use_keyboard=True,
         use_buttons=True,
-        use_ir=True,
+        use_ir=False,
     )
 
     input_manager = InputManager(
@@ -41,48 +40,47 @@ def main() -> None:
     )
 
     print("=== Pi-Ano Started (Chiikawa menu default) ===")
-    print("Commands:")
+    print("Keyboard commands:")
     print("  mode chiikawa")
     print("  mode piano")
     print("  mode rhythm")
     print("  mode song")
-    print("  on <key> [vel]   (piano / rhythm 測試用)")
+    print("  next            (song mode: 下一首)")
+    print("  on <key> [vel]  (debug 用)")
     print("  off <key>")
+    print()
+    print("Buttons:")
+    print("  KEY_0~KEY_4 (D25, D24, D18, D15, D14) → rhythm mode 的 hit")
+    print("  長按 D14 (KEY_4) → 在任何 mode 切到下一個 mode")
     print("Ctrl+C to quit\n")
 
     try:
         while True:
             now = time.monotonic()
+            mode = input_manager.current_mode
 
-            # --- 根據目前 mode，決定要不要 poll IR ---
-            if input_manager.current_mode == "song":
-                # 播歌的時候：
-                # - keyboard 一樣可以下指令（mode / next）
-                # - button 也要能切 mode / next
-                # - 只暫停 IR，避免 I2C 拖慢節奏
-                events = []
+            events = []
 
-                if input_controller.keyboard is not None:
-                    events.extend(input_controller.keyboard.poll())
+            # keyboard：任何 mode 都有用（切 mode / next / debug）
+            if input_controller.keyboard is not None:
+                events.extend(input_controller.keyboard.poll())
 
-                if input_controller.buttons is not None:
-                    events.extend(input_controller.buttons.poll())
+            # buttons：任何 mode 都會 poll（rhythm 當 hit，用 D14 長按切 mode）
+            if input_controller.buttons is not None:
+                events.extend(input_controller.buttons.poll())
 
-                # 不 poll IR：if input_controller.ir is not None: ...
+            # IR：只在 piano mode 使用
+            if mode == "piano":
+                if input_controller.ir is not None:
+                    events.extend(input_controller.ir.poll())
+            # rhythm / song / chiikawa 不用 IR
 
-            else:
-                # 其他模式：照原本方式 poll 全部 input（keyboard + button + IR）
-                events = input_controller.poll()
-
-            # 處理事件（mode switch + NOTE_ON/OFF + NEXT_SONG）
+            # 處理事件 + 更新當前 mode
             input_manager.handle_events(events, now)
-
-            # 更新現在的 mode（chiikawa / piano / rhythm / song）
             input_manager.update(now)
 
-            # --- sleep 時間也稍微區分一下 ---
-            if input_manager.current_mode == "song":
-                # 播歌時：loop 細一點，讓 note 觸發更準
+            # song mode：loop 細一點讓 MIDI scheduler 比較穩
+            if mode == "song":
                 time.sleep(0.001)
             else:
                 time.sleep(1.0 / 60.0)
