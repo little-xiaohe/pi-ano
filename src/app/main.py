@@ -29,7 +29,7 @@ def main() -> None:
     input_controller = InputController(
         use_keyboard=True,
         use_buttons=True,
-        use_ir=False,
+        use_ir=True,
     )
 
     input_manager = InputManager(
