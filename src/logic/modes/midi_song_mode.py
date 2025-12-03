@@ -35,9 +35,9 @@ class MidiSongMode:
     """
     Mode: play songs from a MIDI playlist & light 5 LED keys.
 
-    - 有自己的 scheduler（用 next_on_index / next_off_index）
-    - 支援「歌單」：進入 song mode 時，從 midi_folder 隨機挑一首
-    - 一首播完後可以選擇是否自動換下一首
+    - Own scheduler (next_on_index / next_off_index).
+    - Playlist support: randomly pick a song from midi_folder.
+    - If loop_playlist=True: automatically go to next song when finished.
     """
 
     def __init__(
@@ -45,7 +45,7 @@ class MidiSongMode:
         led: LedMatrix,
         audio: Optional[AudioEngine],
         midi_folder: str = "/home/pi/pi-ano/src/hardware/audio/assets/midi",
-        loop_playlist: bool = True,   # True: 一首播完自動換下一首
+        loop_playlist: bool = True,
         debug: bool = False,
     ) -> None:
         self.led = led
@@ -55,7 +55,7 @@ class MidiSongMode:
 
         self.start_time: Optional[float] = None
 
-        # --- 準備歌單 ---
+        # --- build playlist ---
         folder = Path(midi_folder)
         self.playlist: List[Path] = sorted(
             [p for p in folder.glob("*.mid*") if p.is_file()]
@@ -63,17 +63,10 @@ class MidiSongMode:
         if not self.playlist:
             raise FileNotFoundError(f"No MIDI files found in folder: {folder}")
 
-        # 現在正在播的這一首歌
         self.current_song: Optional[Path] = None
-
-        # 這首歌的所有 note events（global time）
         self.events: List[MidiNoteEvent] = []
-
-        # scheduler 指標
         self.next_on_index: int = 0
         self.next_off_index: int = 0
-
-        # 正在亮的 LED notes
         self.active_led_notes: Dict[KeyId, ActiveLedNote] = {}
 
     # ------------------------------------------------------------------
@@ -95,7 +88,7 @@ class MidiSongMode:
         current_time = 0.0
 
         for msg in mid:
-            current_time += msg.time
+            current_time += msg.time  # already in seconds
 
             if msg.type == "note_on" and msg.velocity > 0:
                 vel = msg.velocity / 127.0
@@ -115,7 +108,7 @@ class MidiSongMode:
                             )
                         )
 
-        # 萬一有 note 沒收到 note_off，就給一個 fallback 長度
+        # fallback for notes without explicit note_off
         for note, (start_time, vel) in active.items():
             events.append(
                 MidiNoteEvent(
@@ -133,14 +126,13 @@ class MidiSongMode:
 
         return events
 
-    # MIDI note → 5 個 LED key（mod 5）
+    # MIDI note → 5 LED keys (mod 5)
     def _midi_note_to_key(self, midi_note: int) -> KeyId:
         """
-        用 modulo-5 把 MIDI 音高丟到 5 個 key：
+        Map MIDI note to 5 keys using modulo-5.
 
-        - 先用 C4 = 60 當作基準
-        - (midi_note - base) % 5 給你 0..4
-        - 對應到 KEY_0..KEY_4
+        - base C4 = 60
+        - (midi_note - base) % 5 -> 0..4 → KEY_0..KEY_4
         """
         base = 60
         idx = (midi_note - base) % 5
@@ -160,7 +152,7 @@ class MidiSongMode:
     # Lifecycle
     # ------------------------------------------------------------------
     def _start_new_song(self, now: float) -> None:
-        """選一首新歌、載入、重置 scheduler，並換一組顏色。"""
+        """Pick a new song, load events, reset scheduler, change LED palette."""
         # 1) random palette for this song
         palette = random.choice(KEY_COLOR_PALETTES)
         self.led.set_key_palette(palette)
@@ -174,40 +166,44 @@ class MidiSongMode:
         self.next_off_index = 0
         self.active_led_notes.clear()
 
+        # also ensure all notes are off when we start
+        if self.audio is not None:
+            self.audio.stop_all()
+
         if self.debug:
             print(f"[MidiSongMode] Start playing: {self.current_song.name} at t={now:.3f}")
             print(f"[MidiSongMode] Palette changed for this song")
 
     def reset(self, now: float) -> None:
         """
-        每次進入 song mode 或想重播歌單時呼叫。
+        Called when entering song mode.
 
-        這裡的策略是：
-        - 每次 reset 都隨機挑一首歌重新開始。
+        Strategy:
+        - Every reset picks a new random song and restarts from beginning.
         """
         self._start_new_song(now)
 
     def handle_events(self, events: List[object]) -> None:
         """
-        目前先忽略外部輸入。
+        Currently ignore external input in song mode.
 
-        之後如果你想在 song mode 裡加 "skip" / "back" / "stop" 指令，
-        可以在這裡處理 keyboard 的 InputEvent。
+        If you later want "skip", "back", etc. via keyboard,
+        you can interpret InputEvent here.
         """
         return
 
     # ------------------------------------------------------------------
-    # Main update（scheduler）
+    # Main update (scheduler)
     # ------------------------------------------------------------------
     def update(self, now: float) -> None:
         if self.start_time is None:
-            # 第一次 update → 隨機挑一首歌
+            # first update → pick a random song
             self._start_new_song(now)
 
         t = now - self.start_time
-        eps = 0.002  # 小容忍誤差
+        eps = 0.002  # small tolerance
 
-        # 1) 觸發 NOTE_ON（只看還沒播過的 notes）
+        # 1) trigger NOTE_ON
         while self.next_on_index < len(self.events):
             ev = self.events[self.next_on_index]
             if ev.start_time <= t + eps:
@@ -216,7 +212,7 @@ class MidiSongMode:
             else:
                 break
 
-        # 2) 觸發 NOTE_OFF
+        # 2) trigger NOTE_OFF
         while self.next_off_index < len(self.events):
             ev = self.events[self.next_off_index]
             if ev.end_time <= t + eps:
@@ -225,40 +221,40 @@ class MidiSongMode:
             else:
                 break
 
-        # 3) 更新 LED 畫面
+        # 3) update LEDs
         self._update_leds(t)
 
-        # 4) 這首歌播完了嗎？
+        # 4) end of song?
         if self.next_off_index >= len(self.events) and not self.active_led_notes:
             if self.loop_playlist:
-                # 自動換下一首
+                # automatically move to next song
                 self._start_new_song(now)
             else:
-                # 不 loop：播完就靜音（保留在最後一幀）
+                # do nothing: stay at the end frame
                 pass
 
     # ------------------------------------------------------------------
-    # Helpers: 音 & LED
+    # Helpers: audio + LED
     # ------------------------------------------------------------------
     def _trigger_note_on(self, ev: MidiNoteEvent, t: float) -> None:
-        """在時間 t 觸發一個 NOTE_ON（聲音 + 加到 active_led_notes）"""
+        """Trigger one NOTE_ON (audio + add to active_led_notes)."""
         key = self._midi_note_to_key(ev.midi_note)
 
-        # LED
+        # LED state
         self.active_led_notes[key] = ActiveLedNote(
             key=key,
             velocity=ev.velocity,
             end_time=ev.end_time,
         )
 
-        # 音
+        # Audio
         if self.audio is not None:
             try:
-                vel127 = max(1, min(127, int(ev.velocity * 127)))
-                self.audio.fs.noteon(self.audio.channel, ev.midi_note, vel127)
+                # velocity already in 0.0~1.0 range
+                self.audio.note_on_midi(ev.midi_note, ev.velocity)
             except Exception as e:
                 if self.debug:
-                    print("[MidiSongMode] audio noteon error:", e)
+                    print("[MidiSongMode] audio note_on_midi error:", e)
 
         if self.debug:
             song = self.current_song.name if self.current_song else "?"
@@ -268,21 +264,19 @@ class MidiSongMode:
             )
 
     def _trigger_note_off(self, ev: MidiNoteEvent, t: float) -> None:
-        """在時間 t 觸發 NOTE_OFF（聲音關掉，LED 由 _update_leds 控制）"""
+        """Trigger NOTE_OFF (audio only; LED is handled by _update_leds)."""
         if self.audio is not None:
             try:
-                self.audio.fs.noteoff(self.audio.channel, ev.midi_note)
+                self.audio.note_off_midi(ev.midi_note)
             except Exception as e:
                 if self.debug:
-                    print("[MidiSongMode] audio noteoff error:", e)
+                    print("[MidiSongMode] audio note_off_midi error:", e)
 
         if self.debug:
-            print(
-                f"[MidiSongMode] NOTE_OFF t={t:.3f}s midi={ev.midi_note}"
-            )
+            print(f"[MidiSongMode] NOTE_OFF t={t:.3f}s midi={ev.midi_note}")
 
     def _update_leds(self, t: float) -> None:
-        """依照 active_led_notes 把 LED 畫出來，過期的 note 自動移除。"""
+        """Draw LEDs based on active_led_notes; remove expired notes."""
         self.led.clear_all()
 
         to_remove: List[KeyId] = []
@@ -303,20 +297,19 @@ class MidiSongMode:
         """
         Skip current song and immediately start a new random one.
         """
-        # 關掉目前所有音符（避免殘音）
+        # stop all current notes to avoid hanging sounds
         if self.audio is not None:
             try:
-                for note in range(128):
-                    self.audio.fs.noteoff(self.audio.channel, note)
+                self.audio.stop_all()
             except Exception as e:
                 if self.debug:
-                    print("[MidiSongMode] skip_to_next noteoff error:", e)
+                    print("[MidiSongMode] stop_all error in skip_to_next:", e)
 
-        # 清掉 LED 畫面
+        # clear LEDs
         self.led.clear_all()
         self.led.show()
 
-        # 開下一首
+        # start next song
         self._start_new_song(now)
 
         if self.debug:
