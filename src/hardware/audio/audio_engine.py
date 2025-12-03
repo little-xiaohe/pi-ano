@@ -28,7 +28,7 @@ class AudioEngine:
 
         # ---- create synth & start audio driver ----
         # driver="alsa" 通常是 RPi 最穩的設定
-        self.fs = fluidsynth.Synth()
+        self.fs = fluidsynth.Synth(gain=1.5, samplerate=sample_rate)
         self.fs.start(driver="alsa")
 
         # ---- channels ----
@@ -43,7 +43,7 @@ class AudioEngine:
 
         # ---- channel volume (7 = volume CC) ----
         # 0~127，這裡給一個中間偏大的音量
-        channel_volume = 100
+        channel_volume = 127
         self.fs.cc(self.piano_channel, 7, channel_volume)
         self.fs.cc(self.hit_channel, 7, channel_volume)
 
