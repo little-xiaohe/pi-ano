@@ -56,16 +56,25 @@ def main() -> None:
 
             # --- 根據目前 mode，決定要不要 poll IR ---
             if input_manager.current_mode == "song":
-                # 播歌的時候：只讀 keyboard，避免 IR + I2C 拖慢節奏
+                # 播歌的時候：
+                # - keyboard 一樣可以下指令（mode / next）
+                # - button 也要能切 mode / next
+                # - 只暫停 IR，避免 I2C 拖慢節奏
+                events = []
+
                 if input_controller.keyboard is not None:
-                    events = input_controller.keyboard.poll()
-                else:
-                    events = []
+                    events.extend(input_controller.keyboard.poll())
+
+                if input_controller.buttons is not None:
+                    events.extend(input_controller.buttons.poll())
+
+                # 不 poll IR：if input_controller.ir is not None: ...
+
             else:
-                # 其他模式：照原本方式 poll 全部 input
+                # 其他模式：照原本方式 poll 全部 input（keyboard + button + IR）
                 events = input_controller.poll()
 
-            # 處理事件（mode switch + NOTE_ON/OFF）
+            # 處理事件（mode switch + NOTE_ON/OFF + NEXT_SONG）
             input_manager.handle_events(events, now)
 
             # 更新現在的 mode（chiikawa / piano / rhythm / song）
@@ -74,9 +83,8 @@ def main() -> None:
             # --- sleep 時間也稍微區分一下 ---
             if input_manager.current_mode == "song":
                 # 播歌時：loop 細一點，讓 note 觸發更準
-                time.sleep(0.001)  # 大約 200 FPS
+                time.sleep(0.001)
             else:
-                # 一般狀況維持 60 FPS 左右
                 time.sleep(1.0 / 60.0)
 
     except KeyboardInterrupt:
