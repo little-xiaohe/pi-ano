@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 import mido
@@ -14,10 +14,33 @@ from src.hardware.config.keys import KeyId
 from src.logic.input_event import InputEvent, EventType
 from src.hardware.audio.audio_engine import AudioEngine
 
-# 你可以換成自己的 MIDI 檔
+# 你可以換成自己的 MIDI 檔（目前是小星星）
 DEFAULT_MIDI_PATH = (
-    "/home/pi/pi-ano/src/hardware/audio/assets/midi/Merry_christmas_mr_lawrence.mid"
+    "/home/pi/pi-ano/src/hardware/audio/assets/midi/Lemon.mid"
 )
+
+# Rhythm mode 只用前 5 顆 key（0..4）
+RHYTHM_KEYS: List[KeyId] = [
+    KeyId.KEY_0,
+    KeyId.KEY_1,
+    KeyId.KEY_2,
+    KeyId.KEY_3,
+    KeyId.KEY_4,
+]
+
+# 每條軌道的基礎顏色（未命中狀態）
+LANE_COLORS = {
+    KeyId.KEY_0: (255, 120, 120),   # 紅
+    KeyId.KEY_1: (255, 210, 120),   # 橘黃
+    KeyId.KEY_2: (120, 220, 255),   # 淺藍
+    KeyId.KEY_3: (160, 200, 255),   # 藍偏紫
+    KeyId.KEY_4: (210, 160, 255),   # 紫
+}
+
+# 判定燈顏色
+FEEDBACK_COLOR_PERFECT = (0, 255, 120)   # 綠色（2分）
+FEEDBACK_COLOR_GOOD    = (255, 180, 60)  # 橘色（1分）
+FEEDBACK_COLOR_MISS    = (255, 60, 60)   # 紅色（miss）
 
 
 # ---------------------------------------------------------------------------
@@ -33,111 +56,34 @@ class ChartNote:
     hit: bool = False           # 有沒有被成功打到
     judged: bool = False        # 是否已經判定（hit 或 miss）
     score: int = 0              # 0, 1, or 2 分
+    audio_started: bool = False # 聲音是否已經播放（只決定 note_on_midi）
 
 
 # ---------------------------------------------------------------------------
-# 簡單 3x5 字型，用於 INTRO "RHYTHM GAME" + 倒數數字（翻轉版）
+# 簡單 3x5 字型，用於 INTRO / 倒數 / 結果（翻轉版）
 # ---------------------------------------------------------------------------
 
 FONT_3x5 = {
-    "R": [
-        "111",
-        "101",
-        "111",
-        "110",
-        "101",
-    ],
-    "H": [
-        "101",
-        "101",
-        "111",
-        "101",
-        "101",
-    ],
-    "Y": [
-        "101",
-        "101",
-        "111",
-        "010",
-        "010",
-    ],
-    "T": [
-        "111",
-        "010",
-        "010",
-        "010",
-        "010",
-    ],
-    "M": [
-        "101",
-        "111",
-        "111",
-        "101",
-        "101",
-    ],
-    "G": [
-        "011",
-        "100",
-        "101",
-        "101",
-        "011",
-    ],
-    "A": [
-        "010",
-        "101",
-        "111",
-        "101",
-        "101",
-    ],
-    "E": [
-        "111",
-        "100",
-        "110",
-        "100",
-        "111",
-    ],
-    " ": [
-        "000",
-        "000",
-        "000",
-        "000",
-        "000",
-    ],
-    "1": [
-        "010",
-        "110",
-        "010",
-        "010",
-        "111",
-    ],
-    "2": [
-        "111",
-        "001",
-        "111",
-        "100",
-        "111",
-    ],
-    "3": [
-        "111",
-        "001",
-        "111",
-        "001",
-        "111",
-    ],
-    "4": [
-        "101",
-        "101",
-        "111",
-        "001",
-        "001",
-    ],
-    "5": [
-        "111",
-        "100",
-        "111",
-        "001",
-        "111",
-    ],
+    "R": ["111", "101", "111", "110", "101"],
+    "H": ["101", "101", "111", "101", "101"],
+    "Y": ["101", "101", "111", "010", "010"],
+    "T": ["111", "010", "010", "010", "010"],
+    "M": ["101", "111", "111", "101", "101"],
+    "G": ["011", "100", "101", "101", "011"],
+    "A": ["010", "101", "111", "101", "101"],
+    "E": ["111", "100", "110", "100", "111"],
+    " ": ["000", "000", "000", "000", "000"],
+    "0": ["111", "101", "101", "101", "111"],
+    "1": ["010", "110", "010", "010", "111"],
+    "2": ["111", "001", "111", "100", "111"],
+    "3": ["111", "001", "111", "001", "111"],
+    "4": ["101", "101", "111", "001", "001"],
+    "5": ["111", "100", "111", "001", "111"],
+    "6": ["111", "100", "111", "101", "111"],
+    "7": ["111", "001", "010", "010", "010"],
+    "8": ["111", "101", "111", "101", "111"],
+    "9": ["111", "101", "111", "001", "111"],
+    "/": ["001", "001", "010", "100", "100"],
 }
 
 
@@ -150,12 +96,14 @@ class RhythmMode:
     Rhythm game mode.
 
     - 用同一首 MIDI 檔當「主旋律」來源。
-    - 從 MIDI 解析所有 note，依時間做 clustering，只留下每一拍的「最高音」當作主旋律。
-    - 每次只出現一顆 note（LED 只亮一個 key），按對時機得分。
+    - 解析所有 note，依時間做 clustering，只留下每一拍的「最高音」當作主旋律。
+    - 顯示方式：
+        每個 note 在要按之前的一段時間內，會以「三格高的方塊」從上往下掉在中間 5 軌。
+        最左 & 最右一列保留當判定燈（紅 / 綠 / 橘），不畫音符。
     - 遊戲流程：
-        1) INTRO：顯示 RHYTHM GAME + 5,4,3,2,1 倒數（字體做 180 度翻轉）
-        2) PLAY：跟著主旋律出 note，可以按 button hit
-        3) DONE：歌曲結束，顯示總分
+        1) INTRO：顯示 RHYTHM / GAME，接著只顯示 5,4,3,2,1 倒數
+        2) PLAY：note 往下掉，到達底部時為判定時間 & 播主旋律音
+        3) DONE：LED 顯示「score/max_score」
     """
 
     def __init__(
@@ -163,7 +111,7 @@ class RhythmMode:
         led: LedMatrix,
         audio: Optional[AudioEngine] = None,
         midi_path: str = DEFAULT_MIDI_PATH,
-        debug: bool = True,
+        debug: bool = False,
     ) -> None:
         self.led = led
         self.audio = audio
@@ -179,24 +127,68 @@ class RhythmMode:
         self.play_start: float | None = None  # 真正開始對齊 MIDI 的時間
 
         # INTRO 參數
-        self.intro_total = 4.0  # 前 4 秒：顯示字 + 倒數
+        self.intro_total = 4.0      # 前 4 秒：顯示字 + 倒數
         self.countdown_start = 1.5  # 1.5 秒後開始 5→1 倒數
 
         # Chart notes
         self.chart_notes: List[ChartNote] = []
         self._notes_built: bool = False
-        self.current_index: int = 0         # 下一顆 note index
+        self.current_index: int = 0         # 下一顆 note index（進入判定用）
         self.active_note: Optional[ChartNote] = None  # 正在被判定的那顆
 
         # 判定窗口（秒）
         self.perfect_window = 0.08   # |Δt| <= 80ms → 2 分
         self.good_window = 0.16      # |Δt| <= 160ms → 1 分
-        self.miss_late_window = 0.25 # 超過這個就當 miss
+        self.miss_late_window = 0.25 # 超過這個就當 miss（不關音，只標記）
+
+        # note 掉落時間：音符會在 time - fall_duration 時出現在最上方
+        # 然後在 time 時剛好掉到最底
+        self.fall_duration = 1.0     # 秒
 
         # 分數
         self.score: int = 0
         self.total_notes: int = 0
         self.max_score: int = 0
+
+        # key → x_range 映射（用「中間區域」平均切成 5 軌）
+        self._key_x_ranges = self._build_key_x_ranges()
+
+        # 判定燈（左右兩列）狀態：用 song_time 來計時
+        self.feedback_until_song_time: float | None = None
+        self.feedback_color: Optional[tuple[int, int, int]] = None
+        self.feedback_duration: float = 0.25  # 秒
+
+    # ------------------------------------------------------------------
+    # key → x-range 映射（掉落格子的寬度）
+    # ------------------------------------------------------------------
+    def _build_key_x_ranges(self) -> dict[KeyId, tuple[int, int]]:
+        """
+        將「螢幕中間區域」平均切成 len(RHYTHM_KEYS) 軌，
+        最左 (x=0) & 最右 (x=width-1) 保留給判定燈。
+        """
+        w = self.led.width
+        if w <= 2:
+            # 太窄就全部塞在中間（理論上不會發生）
+            return {k: (0, w) for k in RHYTHM_KEYS}
+
+        inner_w = w - 2  # 中間可用寬度
+        n = len(RHYTHM_KEYS)
+        base = inner_w // n
+        rem = inner_w % n
+
+        ranges: dict[KeyId, tuple[int, int]] = {}
+        x = 1  # 從 x=1 開始，保留 x=0；最後一格自然不超過 w-2
+        for i, key in enumerate(RHYTHM_KEYS):
+            span = base + (1 if i < rem else 0)
+            x0 = x
+            x1 = x + span
+            ranges[key] = (x0, x1)
+            x = x1
+
+        return ranges
+
+    def _key_x_range(self, key: KeyId) -> tuple[int, int]:
+        return self._key_x_ranges.get(key, (1, max(1, self.led.width - 1)))
 
     # ------------------------------------------------------------------
     # Reset / 初始化遊戲狀態（切進 rhythm mode 時由 InputManager 呼叫）
@@ -213,8 +205,19 @@ class RhythmMode:
             self._build_chart_from_midi()
             self._notes_built = True
 
+        # 每次重新開始要把所有 note 狀態清乾淨
+        for n in self.chart_notes:
+            n.hit = False
+            n.judged = False
+            n.score = 0
+            n.audio_started = False
+
         self.total_notes = len(self.chart_notes)
         self.max_score = self.total_notes * 2
+
+        # 重設判定燈
+        self.feedback_until_song_time = None
+        self.feedback_color = None
 
         if self.debug:
             print(
@@ -229,7 +232,7 @@ class RhythmMode:
         try:
             mid = mido.MidiFile(self.midi_path)
         except Exception as e:
-            print(f"[Rhythm] Failed to load MIDI: {self.midi_path} ({e})")
+            # print(f"[Rhythm] Failed to load MIDI: {self.midi_path} ({e})")
             self.chart_notes = []
             return
 
@@ -285,12 +288,10 @@ class RhythmMode:
                 if abs(note.time - cluster[-1].time) <= cluster_eps:
                     cluster.append(note)
                 else:
-                    # 結束上一 cluster → 留最高音
                     best = max(cluster, key=lambda n: n.midi_note)
                     melody.append(best)
                     cluster = [note]
 
-            # 最後一包
             best = max(cluster, key=lambda n: n.midi_note)
             melody.append(best)
 
@@ -316,13 +317,9 @@ class RhythmMode:
     # ------------------------------------------------------------------
     def _set_xy_flipped(self, x: int, y: int, color) -> None:
         """
-        專門給 rhythm mode 畫文字用的 helper：
         把 y 軸翻轉（0 在邏輯最上方 → 實際最下方）。
-
-        不會影響 piano mode 的座標。
         """
         h = self.led.height
-        # y=0 表示「邏輯上的最上面」，實際要畫在 h-1
         if 0 <= x < self.led.width and 0 <= y < self.led.height:
             self.led.set_xy(x, h - 1 - y, color)
 
@@ -352,25 +349,19 @@ class RhythmMode:
 
         self.led.clear_all()
 
-        # 0.0 ~ 1.5 秒：顯示 "RHYTHM" / "GAME"
+        # 0.0 ~ 1.5 秒：顯示 "RHYTHM GAME"
         if t < self.countdown_start:
             self._draw_text_center_flipped("RHYTHM", 2, (0, 180, 255))
             self._draw_text_center_flipped("GAME", 8, (255, 120, 0))
-
-        # 1.5 秒之後：開始 5→1 倒數
         else:
+            # 1.5 秒之後：只顯示 5→1 倒數
             remain = max(0.0, self.intro_total - t)
-            # 簡單切 5,4,3,2,1 每 0.5 秒
-            step = int(remain / 0.5) + 1  # 1..8 大概，但是只用 5..1
+            step = int(remain / 0.5) + 1
             digit = min(5, max(1, step))
-
-            self._draw_text_center_flipped("RHYTHM", 1, (0, 180, 255))
-            self._draw_text_center_flipped("GAME", 7, (255, 120, 0))
             self._draw_text_center_flipped(str(digit), 4, (255, 255, 255))
 
         self.led.show()
 
-        # 時間到 → 進 PLAY phase
         if t >= self.intro_total:
             self.phase = "PLAY"
             self.play_start = now
@@ -380,9 +371,14 @@ class RhythmMode:
                 print("[Rhythm] INTRO finished. Start PLAY phase.")
 
     # ------------------------------------------------------------------
-    # Hit 判定 & 分數
+    # Hit 判定 & 分數（不再發出 hit 音效）
     # ------------------------------------------------------------------
-    def _register_hit(self, note: ChartNote, dt: float) -> None:
+    def _start_feedback(self, song_time: float, color: tuple[int, int, int]) -> None:
+        """設定左右判定燈的顯示顏色與結束時間。"""
+        self.feedback_color = color
+        self.feedback_until_song_time = song_time + self.feedback_duration
+
+    def _register_hit(self, note: ChartNote, dt: float, song_time: float) -> None:
         """
         dt: hit_time - note_time（秒）
         """
@@ -390,6 +386,7 @@ class RhythmMode:
             return
 
         note.judged = True
+        note.hit = True
 
         adt = abs(dt)
         if adt <= self.perfect_window:
@@ -402,31 +399,38 @@ class RhythmMode:
         if note.score > 0:
             self.score += note.score
 
-            # 播 hit 小音效
-            if self.audio is not None:
-                self.audio.play_hit_sfx()
+        # 根據分數決定判定燈顏色
+        if note.score == 2:
+            self._start_feedback(song_time, FEEDBACK_COLOR_PERFECT)
+        elif note.score == 1:
+            self._start_feedback(song_time, FEEDBACK_COLOR_GOOD)
+        # 0 分就不觸發判定燈（hit 但判為 too late）
 
         if self.debug:
             print(
-                f"[Rhythm] HIT key={note.key} dt={dt:+.3f}s score={note.score} total={self.score}"
+                f"[Rhythm] HIT key={note.key} dt={dt:+.3f}s "
+                f"score={note.score} total={self.score}"
             )
 
-    def _register_miss(self, note: ChartNote) -> None:
+    def _register_miss(self, note: ChartNote, song_time: float) -> None:
         if note.judged:
             return
         note.judged = True
         note.score = 0
+
+        # miss → 左右兩排紅色
+        self._start_feedback(song_time, FEEDBACK_COLOR_MISS)
+
         if self.debug:
             print(f"[Rhythm] MISS key={note.key}")
 
     # ------------------------------------------------------------------
     # handle_events: 只吃 NOTE_ON（button 按下）
+    # ！！這版不再清掉 active_note，讓音樂仍然能在 note.time 播出！！
     # ------------------------------------------------------------------
     def handle_events(self, events: List[InputEvent]) -> None:
         if self.phase != "PLAY":
-            # 在 INTRO / DONE 狀態，按 button 不做判定
             return
-
         if self.play_start is None:
             return
 
@@ -439,18 +443,16 @@ class RhythmMode:
             if ev.key is None:
                 continue
 
-            # 只在有 active_note 時判定
             if self.active_note is None:
                 continue
 
             note = self.active_note
-            # 只允許對應的 key 才能 hit
             if ev.key != note.key:
                 continue
 
-            # note 的目標時間（相對 play_start）
             dt = song_time - note.time
-            self._register_hit(note, dt)
+            self._register_hit(note, dt, song_time)
+            # 不在這裡清掉 active_note，交給 _update_active_note
 
     # ------------------------------------------------------------------
     # update: 根據 phase 決定畫面 & 播放（每 frame 由 InputManager 呼叫）
@@ -470,63 +472,60 @@ class RhythmMode:
 
         song_time = now - self.play_start
 
-        # 1) 控制 active_note 的生命週期
+        # 1) 控制 active_note 的生命週期（負責時間到時播音 + 超時清掉）
         self._update_active_note(song_time)
 
-        # 2) 如果沒有 active_note，就看下一顆 note 要不要出現
+        # 2) 如果沒有 active_note，就看下一顆 note 要不要進入「判定狀態」
         self._spawn_next_note_if_needed(song_time)
 
-        # 3) 畫目前的狀態（只亮 active_note 的 key）
+        # 3) 畫目前的狀態：所有正在掉落/可判定的 note 都畫成「三格方塊」
         self._render_play(song_time)
 
-        # 4) 如果所有 note 都判定完，就進 DONE
+        # 4) 如果所有 note 都已經被判定（hit 或 miss），就進 DONE
         if self.current_index >= len(self.chart_notes) and self.active_note is None:
-            self.phase = "DONE"
-            if self.debug:
-                print(
-                    f"[Rhythm] DONE. score={self.score}/{self.max_score} "
-                    f"(notes={self.total_notes})"
-                )
+            all_judged = all(n.judged for n in self.chart_notes)
+            if all_judged:
+                self.phase = "DONE"
+                if self.debug:
+                    print(
+                        f"[Rhythm] DONE. score={self.score}/{self.max_score} "
+                        f"(notes={self.total_notes})"
+                    )
 
     def _update_active_note(self, song_time: float) -> None:
         if self.active_note is None:
             return
 
         note = self.active_note
-        if note.judged:
-            # 已經 hit 或 miss → 可以關掉聲音、清掉 active
-            if self.audio is not None:
-                self.audio.note_off_midi(note.midi_note)
-            self.active_note = None
-            return
 
-        # 看看是不是已經晚太多 → MISS
+        # 到 note.time 時，一定播主旋律（不管有沒有先被 hit）
+        if self.audio is not None and (not note.audio_started):
+            if song_time >= note.time:
+                vel = int(max(0.1, min(1.0, note.velocity)) * 127)
+                self.audio.note_on_midi(note.midi_note, vel)
+                note.audio_started = True
+
+        # 當時間超過 miss_late_window：
+        # - 如果還沒判定過 → 算 miss（會觸發紅色判定燈）
+        # - 不關音，只把 active_note 清掉，讓下一顆登場
         dt = song_time - note.time
         if dt > self.miss_late_window:
-            self._register_miss(note)
-            if self.audio is not None:
-                self.audio.note_off_midi(note.midi_note)
+            if not note.judged:
+                self._register_miss(note, song_time)
             self.active_note = None
 
     def _spawn_next_note_if_needed(self, song_time: float) -> None:
-        # 如果還有 note，且目前沒有 active_note，就檢查下一顆要不要出現
         if self.active_note is not None:
             return
         if self.current_index >= len(self.chart_notes):
             return
 
         note = self.chart_notes[self.current_index]
+        appear_lead = 0.2  # 提前 200ms 進入判定狀態 / 可 hit
 
-        # 簡單的作法：當 song_time >= note.time - appear_lead，就讓它出現
-        appear_lead = 0.15  # 提前 150ms 讓 key 亮起
         if song_time >= note.time - appear_lead:
             self.active_note = note
             self.current_index += 1
-
-            # 播主旋律音
-            if self.audio is not None:
-                vel = int(max(0.1, min(1.0, note.velocity)) * 127)
-                self.audio.note_on_midi(note.midi_note, vel)
 
             if self.debug:
                 print(
@@ -534,47 +533,94 @@ class RhythmMode:
                     f"song_t={song_time:.3f}"
                 )
 
+    # ------------------------------------------------------------------
+    # 由上往下掉的「方塊」，高度 3 排（多顆同時顯示）
+    # 每條軌顏色不同；命中後變白；左右兩排做判定燈
+    # ------------------------------------------------------------------
     def _render_play(self, song_time: float) -> None:
         self.led.clear_all()
 
-        # 畫 active note 的 key
-        if self.active_note is not None:
-            note = self.active_note
-            # 根據時間差調整亮度：越接近目標時間越亮
-            dt = song_time - note.time
-            adt = abs(dt)
-            # 簡單 Gaussian-ish 效果
-            sigma = 0.12
-            brightness = math.exp(-(adt ** 2) / (2 * sigma * sigma))
-            brightness = max(0.2, min(1.0, brightness + 0.1))
+        w = self.led.width
+        h = self.led.height
 
-            base_color = (0, 120, 255)
-            r = int(base_color[0] * brightness)
-            g = int(base_color[1] * brightness)
-            b = int(base_color[2] * brightness)
-            self.led.fill_key(note.key, (r, g, b), brightness=1.0)
+        # 先畫中間 5 軌的掉落方塊
+        for note in self.chart_notes:
+            dt_to_note = note.time - song_time
+
+            # 還沒出現的 note
+            if dt_to_note > self.fall_duration:
+                break
+
+            # 太久以前的 note（miss window 也過了）→ 不畫
+            if dt_to_note < -self.miss_late_window:
+                continue
+
+            # 時間 → 掉落進度 progress
+            if dt_to_note >= 0:
+                t_from_start = self.fall_duration - dt_to_note
+                progress = t_from_start / self.fall_duration
+            else:
+                progress = 1.0
+
+            progress = max(0.0, min(1.0, progress))
+
+            # progress = 0 → y = 最上面 (h-1)
+            # progress = 1 → y = 最下面 (0)
+            y_center = int((1.0 - progress) * (h - 1) + 0.5)
+
+            # 顏色邏輯：
+            # 1) 命中了 → 方塊變白
+            if note.hit:
+                base_color = (255, 255, 255)
+                boost = 1.0
+            else:
+                # 先取該軌道的基本顏色
+                base_color = LANE_COLORS.get(note.key, (0, 180, 255))
+
+                # 2) 還沒 hit，且是目前 active note：稍微亮一點
+                if self.active_note is not None and note is self.active_note:
+                    boost = 1.1
+                # 3) 其他掉落 note：一般亮度
+                else:
+                    boost = 0.8
+
+            brightness_factor = math.sqrt(progress) * boost
+            brightness_factor = max(0.3, min(1.0, brightness_factor))
+
+            r = int(base_color[0] * brightness_factor)
+            g = int(base_color[1] * brightness_factor)
+            b = int(base_color[2] * brightness_factor)
+            color = (r, g, b)
+
+            x0, x1 = self._key_x_range(note.key)
+
+            # 高度三排：以 y_center 為中心，上下一格
+            for x in range(x0, x1):
+                for y in range(y_center - 1, y_center + 2):
+                    if 0 <= y < h:
+                        self.led.set_xy(x, y, color)
+
+        # 再畫左右判定燈（不影響中間方塊）
+        if (
+            self.feedback_color is not None
+            and self.feedback_until_song_time is not None
+            and song_time <= self.feedback_until_song_time
+        ):
+            left_x = 0
+            right_x = w - 1
+            for y in range(h):
+                self.led.set_xy(left_x, y, self.feedback_color)
+                self.led.set_xy(right_x, y, self.feedback_color)
 
         self.led.show()
 
     # ------------------------------------------------------------------
-    # DONE 畫面：顯示分數（簡單版）
+    # DONE 畫面：顯示「score/max_score」
     # ------------------------------------------------------------------
     def _render_result(self, now: float) -> None:
         self.led.clear_all()
 
-        # 用簡單方式在下方畫「Score 比例條」
-        if self.max_score > 0:
-            ratio = self.score / float(self.max_score)
-        else:
-            ratio = 0.0
-
-        # 進度條長度 0..32
-        bar_len = int(self.led.width * ratio + 0.5)
-        for x in range(bar_len):
-            for y in range(0, 3):
-                self.led.set_xy(x, y, (0, 255, 0))
-
-        # 上面顯示 "END"
-        self._draw_text_center_flipped("END", 9, (255, 255, 255))
+        text = f"{self.score}/{self.max_score}"
+        self._draw_text_center_flipped(text, 5, (255, 255, 255))
 
         self.led.show()
