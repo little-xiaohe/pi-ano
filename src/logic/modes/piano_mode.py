@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from src.hardware.led.led_matrix import LedMatrix
-from src.hardware.config.keys import KeyId, ALL_KEYS, KEY_COLOR_PALETTES
+from src.hardware.config.keys import KeyId, ALL_KEYS, make_rainbow_palette
 from src.logic.input_event import InputEvent, EventType
 from src.hardware.audio.audio_engine import AudioEngine
 
@@ -69,7 +69,7 @@ class PianoMode:
         self.notes[key].is_on = False
         if self.audio is not None:
             self.audio.note_off(key)
-        print(f"[Piano] NOTE_OFF key={key}")
+        # print(f"[Piano] NOTE_OFF key={key}")
 
     def handle_events(self, events: List[InputEvent]) -> None:
         """
@@ -95,16 +95,12 @@ class PianoMode:
                 any_on = True
                 self.led.fill_key(key, brightness=state.velocity)
 
-        if any_on:
-            print("[Piano] update: some keys ON")
+        # if any_on:
+        #     print("[Piano] update: some keys ON")
 
         self.led.show()
 
     def randomize_palette(self) -> None:
-        """
-        Pick a random color palette for the 5 keys.
-
-        Called when entering piano mode (from InputManager).
-        """
-        palette = random.choice(KEY_COLOR_PALETTES)
+        hue_offset = random.random()        # 0.0 ~ 1.0 隨機起始色
+        palette = make_rainbow_palette(hue_offset=hue_offset)
         self.led.set_key_palette(palette)

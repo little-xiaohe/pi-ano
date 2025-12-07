@@ -10,22 +10,49 @@ from src.logic.input_event import InputEvent, EventType
 
 class KeyboardInput:
     """
-    Reads commands from stdin (non-blocking) and produces InputEvent objects.
+    Reads commands from stdin (non-blocking) and converts them into InputEvent objects.
 
-    Supported commands:
-      on <key> [velocity]     → NOTE_ON event
-      off <key>               → NOTE_OFF event
-      mode chiikawa           → MODE_SWITCH to chiikawa menu
-      mode piano              → MODE_SWITCH to piano mode
-      mode rhythm             → MODE_SWITCH to rhythm mode
-      mode song               → MODE_SWITCH to MIDI song mode
-      next                    → in song mode: skip to next song
+    This is mainly a development / debugging input source so you can
+    control modes and trigger keys from a terminal.
+
+    Supported commands (case-insensitive):
+
+        on <key> [velocity]
+            - Emit NOTE_ON for the given key index.
+            - <key>: integer index that maps to KeyId
+            - [velocity]: optional float, default = 1.0
+
+        off <key>
+            - Emit NOTE_OFF for the given key index.
+
+        mode menu
+        mode piano
+        mode rhythm
+        mode song
+            - Emit MODE_SWITCH to the given mode name.
+
+        next
+            - Emit NEXT_SONG (typically handled only in song mode).
+
+    Notes:
+        - poll() is non-blocking: if there is no line in stdin, it returns [].
+        - All events produced from here have source="keyboard" (via InputEvent).
     """
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def poll(self) -> List[InputEvent]:
+        """
+        Check stdin once (non-blocking) and return a list of InputEvent(s)
+        based on a single line of input, if any.
+
+        If there is no pending input, returns an empty list.
+        """
         events: List[InputEvent] = []
 
-        # non-blocking check: is there anything to read from stdin?
+        # Non-blocking check: is there anything ready to read on stdin?
         ready, _, _ = select.select([sys.stdin], [], [], 0.0)
         if not ready:
             return events
@@ -47,24 +74,32 @@ class KeyboardInput:
         if cmd == "mode" and len(parts) >= 2:
             mode_name = parts[1].lower()
 
-            if mode_name in ("chiikawa", "piano", "rhythm", "song"):
+            if mode_name in ("menu", "piano", "rhythm", "song"):
                 events.append(
                     InputEvent(
                         type=EventType.MODE_SWITCH,
                         mode_name=mode_name,
+                        source="keyboard",
                     )
                 )
-                print(f"[KB] MODE_SWITCH -> {mode_name}")
+                print(f"[KB] MODE_SWITCH → {mode_name}")
             else:
-                print("Unknown mode, use: mode chiikawa | mode piano | mode rhythm | mode song")
-
+                print(
+                    "Unknown mode. Use: "
+                    "mode menu | mode piano | mode rhythm | mode song"
+                )
             return events
 
         # -------------------------
         # NEXT SONG (only meaningful in song mode)
         # -------------------------
         if cmd == "next":
-            events.append(InputEvent(type=EventType.NEXT_SONG))
+            events.append(
+                InputEvent(
+                    type=EventType.NEXT_SONG,
+                    source="keyboard",
+                )
+            )
             print("[KB] NEXT_SONG requested")
             return events
 
@@ -91,6 +126,7 @@ class KeyboardInput:
                     type=EventType.NOTE_ON,
                     key=key,
                     velocity=velocity,
+                    source="keyboard",
                 )
             )
             print(f"[KB] NOTE_ON key={key} vel={velocity}")
@@ -111,6 +147,7 @@ class KeyboardInput:
                 InputEvent(
                     type=EventType.NOTE_OFF,
                     key=key,
+                    source="keyboard",
                 )
             )
             print(f"[KB] NOTE_OFF key={key}")
@@ -122,6 +159,6 @@ class KeyboardInput:
         print("Unknown command. Use:")
         print("  on <key> [vel]")
         print("  off <key>")
-        print("  mode chiikawa | mode piano | mode rhythm | mode song")
-        print("  next   (in song mode: skip to next song)")
+        print("  mode menu | mode piano | mode rhythm | mode song")
+        print("  next        (in song mode: skip to next song)")
         return events

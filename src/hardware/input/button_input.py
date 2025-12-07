@@ -11,43 +11,75 @@ from src.logic.input_event import InputEvent, EventType
 from src.hardware.config.keys import KeyId
 
 
-LONG_PRESS_SEC = 1.0  # 長按多久算「切 mode」
+# How long KEY_4 must be held to count as a "mode switch" long press
+LONG_PRESS_SEC = 1.0
 
 
 @dataclass
 class ButtonChannel:
     """
-    One physical button mapped to one KeyId.
+    One physical button wired to a specific KeyId.
+
+    Attributes:
+        key:
+            Logical key ID (KEY_0..KEY_4).
+
+        pin:
+            DigitalInOut object for the GPIO pin.
+
+        last_value:
+            Last sampled pin value.
+            - True  = released (pull-up, idle state)
+            - False = pressed (active LOW)
+
+        press_time:
+            Timestamp (monotonic seconds) when the button was pressed,
+            or None if the button is currently released.
+
+        long_sent:
+            Whether a long-press event (NEXT_MODE) has already been sent
+            for this continuous press. Prevents repeated NEXT_MODE events
+            while the button is held.
     """
     key: KeyId
     pin: digitalio.DigitalInOut
     last_value: bool          # True = released (pull-up), False = pressed
-    press_time: float | None  # 按下當下的時間戳
-    long_sent: bool           # 是否已經送過 NEXT_MODE（避免重複）
+    press_time: float | None  # time.monotonic() when press started
+    long_sent: bool           # True if NEXT_MODE already sent for this press
 
 
 class ButtonInput:
     """
-    Read physical buttons on GPIO and convert them into InputEvent(s).
+    Polls physical GPIO buttons and converts them into InputEvent objects.
 
-    Wiring (pull-up inputs, active LOW):
+    Wiring (using pull-up inputs, active LOW):
 
-      KEY_0 → D25
-      KEY_1 → D24
-      KEY_2 → D18
-      KEY_3 → D15
-      KEY_4 → D14  ← 長按這顆可以「切到下一個 mode」
+        KEY_0 → D25
+        KEY_1 → D24
+        KEY_2 → D18
+        KEY_3 → D15
+        KEY_4 → D14  ← long-press for "next mode"
 
-    規則：
-      - 短按：NOTE_ON / NOTE_OFF（在 rhythm mode 當 hit 用）
-      - 任一 mode 下長按 KEY_4(D14) ≥ LONG_PRESS_SEC：
-          → 送出 EventType.NEXT_MODE
+    Behavior:
+        - Short press:
+            - On press edge (HIGH → LOW)  → emit NOTE_ON
+            - On release edge (LOW → HIGH) → emit NOTE_OFF
+
+        - Long press on KEY_4 (D14):
+            - If held for at least LONG_PRESS_SEC:
+                → emit EventType.NEXT_MODE (once per press)
+
+        NOTE:
+            - The mapping from NOTE_ON / NOTE_OFF to actual behavior is
+              handled at a higher level (InputManager + mode logic).
+            - For example, in piano mode you can filter out NOTE events
+              from source="button" so that buttons only switch modes.
     """
 
     def __init__(self, debug: bool = True) -> None:
         self.debug = debug
 
-        # (KeyId, GPIO pin)
+        # Mapping from KeyId to physical GPIO pins
         key_pin_pairs = [
             (KeyId.KEY_0, board.D25),
             (KeyId.KEY_1, board.D24),
@@ -61,22 +93,38 @@ class ButtonInput:
         for key, pin_obj in key_pin_pairs:
             dio = digitalio.DigitalInOut(pin_obj)
             dio.direction = digitalio.Direction.INPUT
-            dio.pull = digitalio.Pull.UP  # 使用內建上拉，按下時變 LOW
-            ch = ButtonChannel(
+            # Use internal pull-up; button press pulls the line LOW
+            dio.pull = digitalio.Pull.UP
+
+            channel = ButtonChannel(
                 key=key,
                 pin=dio,
-                last_value=True,      # 一開始假設都「沒按」（HIGH）
+                last_value=True,      # assume "released" (HIGH) at startup
                 press_time=None,
                 long_sent=False,
             )
-            self.channels.append(ch)
+            self.channels.append(channel)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def poll(self) -> List[InputEvent]:
         """
-        掃描所有按鈕，產生：
-          - 按下瞬間        → NOTE_ON
-          - 放開瞬間        → NOTE_OFF
-          - D14 長按超過門檻 → NEXT_MODE
+        Scan all buttons once and produce a list of InputEvent objects.
+
+        For each button:
+
+          - Edge: HIGH → LOW  (released → pressed)
+                → emit NOTE_ON
+
+          - While pressed:
+                If key == KEY_4 and held for ≥ LONG_PRESS_SEC
+                and NEXT_MODE was not yet sent:
+                    → emit NEXT_MODE once
+
+          - Edge: LOW → HIGH  (pressed → released)
+                → emit NOTE_OFF
         """
         events: List[InputEvent] = []
         now = time.monotonic()
@@ -84,55 +132,65 @@ class ButtonInput:
         for ch in self.channels:
             current = ch.pin.value  # True = released, False = pressed
 
-            # --- edge: HIGH -> LOW = press ---
+            # ----------------------------------------------------------
+            # Edge: HIGH → LOW = button just pressed
+            # ----------------------------------------------------------
             if ch.last_value and (not current):
                 ch.press_time = now
                 ch.long_sent = False
 
-                # 立刻送出 NOTE_ON（給 rhythm mode 當 hit 用）
-                ev = InputEvent(
-                    type=EventType.NOTE_ON,
-                    key=ch.key,
-                    velocity=1.0,
-                    source="button",
+                # Immediately emit NOTE_ON (used as "hit" in rhythm mode)
+                events.append(
+                    InputEvent(
+                        type=EventType.NOTE_ON,
+                        key=ch.key,
+                        velocity=1.0,
+                        source="button",
+                    )
                 )
-                events.append(ev)
                 if self.debug:
                     print(f"[BTN] NOTE_ON key={int(ch.key)}")
 
-            # --- still pressed: check long press for KEY_4 (D14) ---
+            # ----------------------------------------------------------
+            # While pressed: check long press on KEY_4 (D14)
+            # ----------------------------------------------------------
             if (not current) and ch.press_time is not None:
-                # still pressed
+                # Button is still being held down
                 if (ch.key == KeyId.KEY_4) and (not ch.long_sent):
                     duration = now - ch.press_time
                     if duration >= LONG_PRESS_SEC:
-                        # 送出 NEXT_MODE（切換到下一個 mode）
-                        ev = InputEvent(
-                            type=EventType.NEXT_MODE,
-                            source="button",
+                        # Emit a single NEXT_MODE event for this press
+                        events.append(
+                            InputEvent(
+                                type=EventType.NEXT_MODE,
+                                source="button",
+                            )
                         )
-                        events.append(ev)
                         ch.long_sent = True
                         if self.debug:
                             print("[BTN] LONG PRESS on KEY_4 → NEXT_MODE")
 
-            # --- edge: LOW -> HIGH = release ---
+            # ----------------------------------------------------------
+            # Edge: LOW → HIGH = button just released
+            # ----------------------------------------------------------
             if (not ch.last_value) and current:
-                # 放開瞬間：NOTE_OFF
-                ev = InputEvent(
-                    type=EventType.NOTE_OFF,
-                    key=ch.key,
-                    velocity=1.0,
-                    source="button",
+                # Emit NOTE_OFF on release
+                events.append(
+                    InputEvent(
+                        type=EventType.NOTE_OFF,
+                        key=ch.key,
+                        velocity=1.0,
+                        source="button",
+                    )
                 )
-                events.append(ev)
                 if self.debug:
                     print(f"[BTN] NOTE_OFF key={int(ch.key)}")
 
-                # reset press info
+                # Reset press tracking state
                 ch.press_time = None
                 ch.long_sent = False
 
+            # Update last_value for next poll
             ch.last_value = current
 
         return events

@@ -3,39 +3,31 @@
 from typing import List
 
 from src.logic.input_event import InputEvent, EventType
-from src.logic.modes.chiikawa_mode import ChiikawaMode
+from src.logic.modes.menu_mode import MenuMode
 from src.logic.modes.piano_mode import PianoMode
 from src.logic.modes.rhythm_mode import RhythmMode
 from src.logic.modes.midi_song_mode import MidiSongMode
+from src.hardware.pico.pico_mode_display import PicoModeDisplay
 
 
 class InputManager:
-    """
-    Central mode/state manager.
-
-    Modes:
-      - "chiikawa" : menu / home screen
-      - "piano"    : piano playing mode
-      - "rhythm"   : rhythm game mode
-      - "song"     : MIDI playlist mode
-    """
-
     def __init__(
         self,
-        chiikawa: ChiikawaMode,
-        piano: PianoMode,
-        rhythm: RhythmMode,
-        song: MidiSongMode,
-    ) -> None:
-        self.chiikawa = chiikawa
+        menu,
+        piano,
+        rhythm,
+        song,
+        pico_display: PicoModeDisplay | None = None,   # ★ 新增
+    ):
+        self.menu = menu
         self.piano = piano
         self.rhythm = rhythm
         self.song = song
 
-        self.current_mode: str = "chiikawa"
+        self.pico_display = pico_display               # ★ 新增
 
-        # 長按 D14 要用的輪詢順序
-        self._mode_order = ["chiikawa", "piano", "rhythm", "song"]
+        self.current_mode = "menu"
+        self._mode_order = ["menu", "piano", "rhythm", "song"]
 
     # --------------------- Event handling ---------------------
 
@@ -44,7 +36,7 @@ class InputManager:
         for ev in events:
             # ---- MODE_SWITCH: keyboard 指令 ----
             if ev.type == EventType.MODE_SWITCH and ev.mode_name in (
-                "chiikawa",
+                "menu",
                 "piano",
                 "rhythm",
                 "song",
@@ -79,38 +71,47 @@ class InputManager:
             # song mode 目前不吃外部 NOTE（全部來自 MIDI）
             pass
         else:
-            # chiikawa：暫時忽略 NOTE（如有彩蛋可在這裡加）
+            # menu mode：暫時忽略 NOTE（如有彩蛋可在這裡加）
             pass
-
-    # --------------------- Mode switching ---------------------
 
     def _switch_mode(self, mode_name: str, now: float) -> None:
         if mode_name == self.current_mode:
             return
 
+        old_mode = self.current_mode
+
+        # --- on-exit hooks for old mode ---
+        if old_mode == "rhythm":
+            self.rhythm.on_exit()
+        # 如果之後 song 有 scheduler，也可以做 self.song.on_exit()
+
+        # --- switch current mode ---
         self.current_mode = mode_name
         print(f"[MODE] Switched to: {self.current_mode.upper()}")
 
-        if mode_name == "chiikawa":
-            self.chiikawa.reset(now)
-
+        # --- per-mode on-enter behavior ---
+        if mode_name == "menu":
+            self.menu.reset(now)
         elif mode_name == "piano":
             if hasattr(self.piano, "randomize_palette"):
                 self.piano.randomize_palette()
-
         elif mode_name == "rhythm":
             self.rhythm.reset(now)
-
         elif mode_name == "song":
             self.song.reset(now)
+
+        # --- notify Pico ---
+        if self.pico_display is not None:
+            self.pico_display.show_mode(mode_name)
+
 
     def _cycle_mode(self, now: float) -> None:
         """長按 D14 時呼叫：依序輪到下一個 mode。"""
         try:
             idx = self._mode_order.index(self.current_mode)
         except ValueError:
-            # 不在列表裡的話，直接回到 chiikawa
-            next_mode = "chiikawa"
+            # 不在列表裡的話，直接回到 menu
+            next_mode = "menu"
         else:
             next_mode = self._mode_order[(idx + 1) % len(self._mode_order)]
 
@@ -127,4 +128,4 @@ class InputManager:
         elif self.current_mode == "song":
             self.song.update(now)
         else:
-            self.chiikawa.update(now)
+            self.menu.update(now)

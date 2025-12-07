@@ -5,14 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Optional
-import random
 
+import random
+import math
 import mido
 
 from src.hardware.led.led_matrix import LedMatrix
-from src.hardware.config.keys import KeyId, KEY_COLOR_PALETTES
+from src.hardware.config.keys import (
+    KeyId,
+    KEY_COLOR_PALETTES,  # still used to pick a palette per song (for consistency)
+    KEY_ZONES,           # ★ used to know which x columns belong to which key
+)
 from src.hardware.audio.audio_engine import AudioEngine
 
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
 @dataclass
 class MidiNoteEvent:
@@ -31,6 +40,10 @@ class ActiveLedNote:
     end_time: float
 
 
+# ---------------------------------------------------------------------------
+# MidiSongMode
+# ---------------------------------------------------------------------------
+
 class MidiSongMode:
     """
     Mode: play songs from a MIDI playlist & light 5 LED keys.
@@ -38,13 +51,16 @@ class MidiSongMode:
     - Own scheduler (next_on_index / next_off_index).
     - Playlist support: randomly pick a song from midi_folder.
     - If loop_playlist=True: automatically go to next song when finished.
+    - LED:
+        * Full-panel moving rainbow gradient.
+        * Columns belonging to keys that are currently active get brighter.
     """
 
     def __init__(
         self,
         led: LedMatrix,
         audio: Optional[AudioEngine],
-        midi_folder: str = "/home/pi/pi-ano/src/hardware/audio/assets/midi",
+        midi_folder: str = "/home/pi/pi-ano/src/hardware/audio/assets/midi/song",
         loop_playlist: bool = True,
         debug: bool = False,
     ) -> None:
@@ -68,6 +84,80 @@ class MidiSongMode:
         self.next_on_index: int = 0
         self.next_off_index: int = 0
         self.active_led_notes: Dict[KeyId, ActiveLedNote] = {}
+
+        # Precompute x → key mapping for the LED matrix
+        # This lets us know which rainbow column belongs to which piano key.
+        self._x_to_key: Dict[int, Optional[KeyId]] = self._build_x_to_key()
+
+        # Parameters for rainbow animation
+        # hue(t, x) = base_hue + time_speed * t + spatial_span * (x / width)
+        self.rainbow_time_speed: float = 0.06   # how fast hue cycles over time
+        self.rainbow_spatial_span: float = 0.35 # hue difference from left to right
+
+    # ------------------------------------------------------------------
+    # x → key mapping
+    # ------------------------------------------------------------------
+    def _build_x_to_key(self) -> Dict[int, Optional[KeyId]]:
+        """
+        Build a mapping from x-column to KeyId (or None if that x is border).
+
+        Uses KEY_ZONES from the central key config.
+        Assumes KEY_ZONES[x0, x1] are inclusive ranges.
+        """
+        mapping: Dict[int, Optional[KeyId]] = {}
+        width = self.led.width
+
+        # Default: None (no key assigned, e.g. border columns)
+        for x in range(width):
+            mapping[x] = None
+
+        for key, (x0, x1) in KEY_ZONES.items():
+            # Clamp to LED bounds, just in case
+            start = max(0, x0)
+            end = min(width - 1, x1)
+            for x in range(start, end + 1):
+                mapping[x] = key
+
+        return mapping
+
+    # ------------------------------------------------------------------
+    # Small HSV → RGB helper (0.0~1.0 → 0~255)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
+        """
+        Convert HSV (0.0~1.0) to RGB (0~255).
+        Simple implementation, good enough for LED gradients.
+        """
+        h = h % 1.0
+        s = max(0.0, min(1.0, s))
+        v = max(0.0, min(1.0, v))
+
+        i = int(h * 6.0)
+        f = (h * 6.0) - i
+        p = v * (1.0 - s)
+        q = v * (1.0 - f * s)
+        t = v * (1.0 - (1.0 - f) * s)
+        i = i % 6
+
+        if i == 0:
+            r, g, b = v, t, p
+        elif i == 1:
+            r, g, b = q, v, p
+        elif i == 2:
+            r, g, b = p, v, t
+        elif i == 3:
+            r, g, b = p, q, v
+        elif i == 4:
+            r, g, b = t, p, v
+        else:
+            r, g, b = v, p, q
+
+        return (
+            int(r * 255 + 0.5),
+            int(g * 255 + 0.5),
+            int(b * 255 + 0.5),
+        )
 
     # ------------------------------------------------------------------
     # Playlist / song loading
@@ -108,7 +198,7 @@ class MidiSongMode:
                             )
                         )
 
-        # fallback for notes without explicit note_off
+        # Fallback for notes without explicit note_off
         for note, (start_time, vel) in active.items():
             events.append(
                 MidiNoteEvent(
@@ -153,11 +243,14 @@ class MidiSongMode:
     # ------------------------------------------------------------------
     def _start_new_song(self, now: float) -> None:
         """Pick a new song, load events, reset scheduler, change LED palette."""
-        # 1) random palette for this song
+        # 1) Random palette for this song
+        #    (still used so piano / other modes can share a palette idea;
+        #     in this mode we mainly use dynamic rainbow, but keeping this
+        #     call does not hurt and keeps behavior consistent.)
         palette = random.choice(KEY_COLOR_PALETTES)
         self.led.set_key_palette(palette)
 
-        # 2) pick song & load events
+        # 2) Pick song & load events
         self.current_song = self._pick_random_song()
         self.events = self._load_song_events(self.current_song)
 
@@ -166,7 +259,7 @@ class MidiSongMode:
         self.next_off_index = 0
         self.active_led_notes.clear()
 
-        # also ensure all notes are off when we start
+        # Also ensure all notes are off when we start
         if self.audio is not None:
             self.audio.stop_all()
 
@@ -197,7 +290,7 @@ class MidiSongMode:
     # ------------------------------------------------------------------
     def update(self, now: float) -> None:
         if self.start_time is None:
-            # first update → pick a random song
+            # First update → pick a random song
             self._start_new_song(now)
 
         t = now - self.start_time
@@ -221,7 +314,7 @@ class MidiSongMode:
             else:
                 break
 
-        # 3) update LEDs
+        # 3) update LEDs (rainbow gradient + key highlights)
         self._update_leds(t)
 
         # 4) end of song?
@@ -276,20 +369,77 @@ class MidiSongMode:
             print(f"[MidiSongMode] NOTE_OFF t={t:.3f}s midi={ev.midi_note}")
 
     def _update_leds(self, t: float) -> None:
-        """Draw LEDs based on active_led_notes; remove expired notes."""
-        self.led.clear_all()
+        """
+        Draw LEDs based on active_led_notes, with a full-panel rainbow gradient.
 
+        - Rainbow hue slowly scrolls over time and across x.
+        - Columns belonging to keys that are currently active are brighter.
+        - Borders / non-key columns are dimmer background.
+        """
+        # Remove expired LED notes
         to_remove: List[KeyId] = []
-
         for key, active in self.active_led_notes.items():
             if t >= active.end_time:
                 to_remove.append(key)
-            else:
-                brightness = max(0.1, min(1.0, active.velocity))
-                self.led.fill_key(key, brightness=brightness)
-
         for key in to_remove:
             self.active_led_notes.pop(key, None)
+
+        width = self.led.width
+        height = self.led.height
+
+        self.led.clear_all()
+
+        # Precompute which keys are active and their "strength"
+        # strength: 0.0~1.0 based on velocity, clamped
+        active_strength: Dict[KeyId, float] = {}
+        for key, active in self.active_led_notes.items():
+            strength = max(0.2, min(1.0, active.velocity))
+            active_strength[key] = strength
+
+        # Draw rainbow gradient column by column
+        for x in range(width):
+            key_for_col = self._x_to_key.get(x)
+
+            # Base hue for this column:
+            #   - time-driven component (scrolls horizontally in color space)
+            #   - spatial component so left vs right have different colors
+            h = (
+                self.rainbow_time_speed * t
+                + self.rainbow_spatial_span * (x / max(1, width - 1))
+            ) % 1.0
+
+            # Base brightness:
+            #   - if this column belongs to a key:
+            #       * if active → brighter (based on velocity)
+            #       * if not active → normal key brightness
+            #   - if no key (border) → dimmer background
+            if key_for_col is not None and key_for_col in active_strength:
+                # Key is active: strong highlight
+                s = 1.0
+                v = 0.45 + 0.45 * active_strength[key_for_col]  # 0.45~0.9
+            elif key_for_col is not None:
+                # Key column but currently inactive
+                s = 1.0
+                v = 0.18  # subtle but visible
+            else:
+                # Border / non-key column
+                s = 0.9
+                v = 0.08
+
+            r, g, b = self._hsv_to_rgb(h, s, v)
+
+            # Optional: small vertical brightness variation (soft vignette)
+            for y in range(height):
+                # You can tweak this if you want more vertical "wave"
+                # For now just apply a tiny curve so middle rows are a bit brighter
+                y_norm = (y / max(1, height - 1))  # 0..1 bottom→top (depending on wiring)
+                # Center bump around middle of panel
+                bump = 1.0 + 0.15 * math.cos((y_norm - 0.5) * math.pi)
+                rr = int(max(0, min(255, r * bump)))
+                gg = int(max(0, min(255, g * bump)))
+                bb = int(max(0, min(255, b * bump)))
+
+                self.led.set_xy(x, y, (rr, gg, bb))
 
         self.led.show()
 
@@ -297,7 +447,7 @@ class MidiSongMode:
         """
         Skip current song and immediately start a new random one.
         """
-        # stop all current notes to avoid hanging sounds
+        # Stop all current notes to avoid hanging sounds
         if self.audio is not None:
             try:
                 self.audio.stop_all()
@@ -305,11 +455,11 @@ class MidiSongMode:
                 if self.debug:
                     print("[MidiSongMode] stop_all error in skip_to_next:", e)
 
-        # clear LEDs
+        # Clear LEDs
         self.led.clear_all()
         self.led.show()
 
-        # start next song
+        # Start next song
         self._start_new_song(now)
 
         if self.debug:

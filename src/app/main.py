@@ -4,28 +4,107 @@ import time
 
 from src.hardware.led.led_matrix import LedMatrix
 from src.hardware.audio.audio_engine import AudioEngine
+from src.hardware.pico.pico_mode_display import PicoModeDisplay
 
 from src.logic.input_controller import InputController
 from src.logic.input_manager import InputManager
+from src.logic.input_event import EventType    # ★ NEW
 
-from src.logic.modes.chiikawa_mode import ChiikawaMode
+from src.logic.modes.menu_mode import MenuMode
 from src.logic.modes.piano_mode import PianoMode
 from src.logic.modes.rhythm_mode import RhythmMode
 from src.logic.modes.midi_song_mode import MidiSongMode
 
 
+def print_startup_help() -> None:
+    """Print a quick reference for keyboard and button controls."""
+    print("=== Pi-Ano Started (default mode: Menu) ===\n")
+
+    print("Keyboard commands:")
+    print("  mode menu")
+    print("  mode piano")
+    print("  mode rhythm")
+    print("  mode song")
+    print("  next            (in song mode: skip to next track)")
+    print("  on <key> [vel]  (debug note-on)")
+    print("  off <key>       (debug note-off)")
+    print()
+
+    print("Buttons:")
+    print("  KEY_0 ~ KEY_4 (D25, D24, D18, D15, D14)")
+    print("    → used as hit buttons in rhythm mode")
+    print("  Long press D14 (KEY_4)")
+    print("    → cycle through modes: menu → piano → rhythm → song")
+    print()
+    print("Press Ctrl+C in the terminal to quit.\n")
+
+
+def poll_all_inputs(input_controller: InputController, current_mode: str):
+    """
+    Poll all input sources and return a flat list of InputEvent objects.
+
+    Rules:
+      - Keyboard is always active (mode switching, 'next', debug notes).
+      - Buttons are always active, BUT:
+          * In piano mode, buttons are used *only* for mode switching
+            (e.g., NEXT_MODE), and their NOTE_ON / NOTE_OFF events are ignored.
+          * In other modes (e.g., rhythm), button NOTE events are kept.
+      - IR is only used in piano mode.
+    """
+    events = []
+
+    # Keyboard: always active
+    if input_controller.keyboard is not None:
+        events.extend(input_controller.keyboard.poll())
+
+    # Buttons: always polled, but we may filter events depending on mode
+    if input_controller.buttons is not None:
+        btn_events = input_controller.buttons.poll()
+
+        if current_mode == "piano":
+            # In piano mode we only keep "mode control" style events,
+            # and drop NOTE_ON / NOTE_OFF from buttons so they do not
+            # trigger PianoMode or AudioEngine.
+            btn_events = [
+                e
+                for e in btn_events
+                if e.type in (EventType.NEXT_MODE, EventType.MODE_SWITCH)
+            ]
+
+        events.extend(btn_events)
+
+    # IR: only used in piano mode
+    if current_mode == "piano" and input_controller.ir is not None:
+        events.extend(input_controller.ir.poll())
+
+    return events
+
+
+
 def main() -> None:
-    # --- hardware / engine ---
+    # ------------------------------------------------------------------
+    # Hardware / engines
+    # ------------------------------------------------------------------
     led = LedMatrix()
     audio = AudioEngine()
 
-    # --- modes ---
-    chiikawa = ChiikawaMode(led)
+    pico_display = PicoModeDisplay(
+        device="/dev/ttyACM0",
+        baudrate=115200,
+        enabled=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Mode objects
+    # ------------------------------------------------------------------
+    menu = MenuMode(led)
     piano = PianoMode(led, audio=audio)
-    rhythm = RhythmMode(led, audio=audio)
+    rhythm = RhythmMode(led, audio=audio, debug=False)
     song = MidiSongMode(led, audio=audio, loop_playlist=True)
 
-    # --- input devices ---
+    # ------------------------------------------------------------------
+    # Input sources + central manager
+    # ------------------------------------------------------------------
     input_controller = InputController(
         use_keyboard=True,
         use_buttons=True,
@@ -33,64 +112,57 @@ def main() -> None:
     )
 
     input_manager = InputManager(
-        chiikawa=chiikawa,
+        menu=menu,
         piano=piano,
         rhythm=rhythm,
         song=song,
+        pico_display=pico_display,
     )
 
-    print("=== Pi-Ano Started (Chiikawa menu default) ===")
-    print("Keyboard commands:")
-    print("  mode chiikawa")
-    print("  mode piano")
-    print("  mode rhythm")
-    print("  mode song")
-    print("  next            (song mode: 下一首)")
-    print("  on <key> [vel]  (debug 用)")
-    print("  off <key>")
-    print()
-    print("Buttons:")
-    print("  KEY_0~KEY_4 (D25, D24, D18, D15, D14) → rhythm mode 的 hit")
-    print("  長按 D14 (KEY_4) → 在任何 mode 切到下一個 mode")
-    print("Ctrl+C to quit\n")
+    print_startup_help()
 
     try:
         while True:
             now = time.monotonic()
-            mode = input_manager.current_mode
+            current_mode = input_manager.current_mode
 
-            events = []
+            # 1) Collect all input events for this frame
+            events = poll_all_inputs(input_controller, current_mode)
 
-            # keyboard：任何 mode 都有用（切 mode / next / debug）
-            if input_controller.keyboard is not None:
-                events.extend(input_controller.keyboard.poll())
-
-            # buttons：任何 mode 都會 poll（rhythm 當 hit，用 D14 長按切 mode）
-            if input_controller.buttons is not None:
-                events.extend(input_controller.buttons.poll())
-
-            # IR：只在 piano mode 使用
-            if mode == "piano":
-                if input_controller.ir is not None:
-                    events.extend(input_controller.ir.poll())
-            # rhythm / song / chiikawa 不用 IR
-
-            # 處理事件 + 更新當前 mode
+            # 2) Let InputManager route events and update the active mode
             input_manager.handle_events(events, now)
             input_manager.update(now)
 
-            # song mode：loop 細一點讓 MIDI scheduler 比較穩
-            if mode == "song":
+            # 3) Frame pacing
+            #
+            # Song mode runs slightly tighter to keep MIDI scheduling smooth.
+            if current_mode == "song":
                 time.sleep(0.001)
             else:
+                # ~60 FPS for other modes
                 time.sleep(1.0 / 60.0)
 
     except KeyboardInterrupt:
-        print("\nStopping, clearing LEDs...")
+        print("\n[Main] KeyboardInterrupt: shutting down...")
     finally:
-        led.clear_all()
-        led.show()
-        audio.close()
+        # Best-effort cleanup: stop audio, clear LEDs, close Pico serial.
+        try:
+            led.clear_all()
+            led.show()
+        except Exception:
+            pass
+
+        try:
+            audio.close()
+        except Exception:
+            pass
+
+        try:
+            pico_display.close()
+        except Exception:
+            pass
+
+        print("[Main] Cleanup done. Bye.")
 
 
 if __name__ == "__main__":
