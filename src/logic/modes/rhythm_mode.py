@@ -20,10 +20,12 @@ from src.logic.modes.rhythm_audio import AudioScheduler
 # Config
 # ---------------------------------------------------------------------------
 
-# You can change this to any MIDI file you like.
-DEFAULT_MIDI_PATH = (
-    "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/twinkle-twinkle-little-star.mid"
-)
+# 3 個難度對應的 MIDI 檔
+DEFAULT_MIDI_PATHS: Dict[str, str] = {
+    "easy":   "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/twinkle-twinkle-little-star.mid",
+    "medium": "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/end-of-line.mid",
+    "hard":   "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/Totoro.mid",
+}
 
 # Rhythm mode uses the first 5 keys (0..4)
 RHYTHM_KEYS: List[KeyId] = [
@@ -34,27 +36,30 @@ RHYTHM_KEYS: List[KeyId] = [
     KeyId.KEY_4,
 ]
 
-# Base colors for each lane (before hit)
-# Very high-saturation, clearly separated rainbow-like colors.
+# 高彩度 lane 顏色（遊戲中的落下方塊用）
 LANE_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
-    KeyId.KEY_0: (255, 40, 80),    # vivid red-pink
-    KeyId.KEY_1: (255, 220, 40),   # bright yellow
-    KeyId.KEY_2: (60, 255, 140),   # neon green / mint
-    KeyId.KEY_3: (60, 210, 255),   # bright cyan
-    KeyId.KEY_4: (200, 120, 255),  # strong violet
+    KeyId.KEY_0: (255, 80, 80),    # strong red
+    KeyId.KEY_1: (255, 180, 60),   # vivid orange
+    KeyId.KEY_2: (80, 200, 255),   # bright cyan
+    KeyId.KEY_3: (140, 120, 255),  # violet
+    KeyId.KEY_4: (255, 100, 220),  # magenta-pink
 }
 
-# Judge feedback colors (left/right columns)
-# MISS => bright red
-# PERFECT (2 pts) => matcha green
-# GOOD (1 pt) => orange
-FEEDBACK_COLOR_PERFECT = (170, 255, 120)  # 抹茶綠 (2 points, slightly brighter)
-FEEDBACK_COLOR_GOOD    = (255, 190, 80)   # 橘色   (1 point, high saturation)
-FEEDBACK_COLOR_MISS    = (255, 20, 20)    # 鮮紅色 (miss)
+# ★ 選難度時用的三個 key 顏色（Pi 大 LED 上顯示）
+#   KEY_1 → HARD (紅)
+#   KEY_2 → MEDIUM (橘)
+#   KEY_3 → EASY (綠)
+DIFFICULTY_SELECTION_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
+    KeyId.KEY_1: (255, 60, 60),    # HARD → red
+    KeyId.KEY_2: (255, 180, 60),   # MEDIUM → orange
+    KeyId.KEY_3: (120, 220, 120),  # EASY → green (matcha-ish)
+}
 
-# Intro timing
-INTRO_TOTAL_SEC = 4.0
-INTRO_COUNTDOWN_START_SEC = 1.5
+# Feedback colors (left/right columns)
+FEEDBACK_COLOR_PERFECT = (120, 220, 120)   # matcha-ish green (2 points)
+FEEDBACK_COLOR_GOOD    = (255, 180, 60)    # orange (1 point)
+FEEDBACK_COLOR_MISS    = (255, 40, 40)     # bright red (miss)
+
 # Judge windows (seconds)
 PERFECT_WINDOW_SEC = 0.08    # |dt| <= 80ms → 2 points
 GOOD_WINDOW_SEC    = 0.16    # |dt| <= 160ms → 1 point
@@ -67,81 +72,69 @@ FALL_DURATION_SEC = 1.0
 # Feedback lamp duration
 FEEDBACK_DURATION_SEC = 0.25
 
-# ---------------------------------------------------------------------------
-# Simple 3x5 font for intro / countdown / result (flipped Y)
-# ---------------------------------------------------------------------------
-
-FONT_3x5: Dict[str, List[str]] = {
-    "R": ["111", "101", "111", "110", "101"],
-    "H": ["101", "101", "111", "101", "101"],
-    "Y": ["101", "101", "111", "010", "010"],
-    "T": ["111", "010", "010", "010", "010"],
-    "M": ["101", "111", "111", "101", "101"],
-    "G": ["011", "100", "101", "101", "011"],
-    "A": ["010", "101", "111", "101", "101"],
-    "E": ["111", "100", "110", "100", "111"],
-    " ": ["000", "000", "000", "000", "000"],
-    "0": ["111", "101", "101", "101", "111"],
-    "1": ["010", "110", "010", "010", "111"],
-    "2": ["111", "001", "111", "100", "111"],
-    "3": ["111", "001", "111", "001", "111"],
-    "4": ["101", "101", "111", "001", "001"],
-    "5": ["111", "100", "111", "001", "111"],
-    "6": ["111", "100", "111", "101", "111"],
-    "7": ["111", "001", "010", "010", "010"],
-    "8": ["111", "101", "111", "101", "111"],
-    "9": ["111", "101", "111", "001", "111"],
-    "/": ["001", "001", "010", "100", "100"],
-}
-
 
 # ---------------------------------------------------------------------------
 # RhythmMode
+#   Phases:
+#     - WAIT_COUNTDOWN: 等 Pico 倒數 & 選難度（Pi 顯示紅/橘/綠三條）
+#     - PLAY          : notes falling, scoring active
+#     - DONE          : finished, audio stopped, Pi LEDs off
+#
+#   Difficulties:
+#     - easy / medium / hard
+#     - Each difficulty uses a different MIDI file.
 # ---------------------------------------------------------------------------
 
 class RhythmMode:
     """
-    Rhythm game mode.
+    Rhythm game mode driven by an external countdown (Pico), with
+    three difficulties (easy / medium / hard), each using a different MIDI.
 
-    - Uses a single MIDI file as the melody source.
-    - Parses all notes, clusters by time, and keeps only the highest note
-      in each cluster as the main melody.
-    - Visuals:
-        * Each note appears as a 3-cell tall falling block in the middle
-          5 lanes (center columns of the LED matrix).
-        * Leftmost and rightmost columns are reserved for hit feedback
-          (red / green / orange).
-    - Sound:
-        * Melody playback is handled by AudioScheduler in a background
-          thread, so timing is not affected by LED FPS.
-    - Flow:
-        1) INTRO: show "RHYTHM / GAME", then 5,4,3,2,1 countdown
-        2) PLAY: falling notes; bottom is the hit timing
-        3) DONE: show "score/max_score"
+    Flow:
+      1) InputManager switches to rhythm mode → reset(now)
+         - phase = "WAIT_COUNTDOWN"
+         - Pi LED matrix 顯示三條彩色 key（紅=HARD / 橘=MEDIUM / 綠=EASY）
+         - Pico 顯示 RYTHM / SELECT MODE / 等待玩家按 D15 / D18 / D24
+         - 按鍵選好難度後，InputManager 呼叫:
+             rhythm.set_difficulty("easy" | "medium" | "hard")
+             pico_display.send_rhythm_countdown()
+         - Pico 倒數 5→1，結束時在 USB serial 印出
+             RHYTHM:COUNTDOWN_DONE
+
+      2) Pi 端收到 RHYTHM:COUNTDOWN_DONE → 呼叫:
+             rhythm.start_play_after_countdown(now)
+             pico_display.send_rhythm_level(difficulty)
+         - phase = "PLAY"
+         - AudioScheduler starts, notes begin to fall
+
+      3) When all notes are judged (hit / miss) → phase = "DONE"
+         - stop audio, Pi LED cleared
+         - InputManager 把 score/max_score 傳給 Pico 顯示 RHYTHM:RESULT:x/y
     """
-
-    # ------------------------------------------------------------------
-    # Construction / mode lifecycle
-    # ------------------------------------------------------------------
 
     def __init__(
         self,
         led: LedMatrix,
         audio: Optional[AudioEngine] = None,
-        midi_path: str = DEFAULT_MIDI_PATH,
+        midi_paths: Optional[Dict[str, str]] = None,
         debug: bool = True,
     ) -> None:
         self.led = led
         self.audio = audio
-        self.midi_path = midi_path
         self.debug = debug
 
         # Time function (shared with main loop)
         self._time_fn = time.monotonic
 
-        # Phase: "INTRO" / "PLAY" / "DONE"
-        self.phase: str = "INTRO"
-        self.intro_start: float | None = None
+        # Difficulty → midi_path
+        self.midi_paths: Dict[str, str] = midi_paths or DEFAULT_MIDI_PATHS.copy()
+
+        # Current difficulty ("easy" / "medium" / "hard")
+        self.difficulty: str = "easy"
+        self.midi_path: str = self.midi_paths[self.difficulty]
+
+        # Phase: "WAIT_COUNTDOWN" / "PLAY" / "DONE"
+        self.phase: str = "WAIT_COUNTDOWN"
         self.play_start: float | None = None  # aligned with MIDI 0s
 
         # Chart state
@@ -150,7 +143,7 @@ class RhythmMode:
         self.current_index: int = 0              # index for judge window
         self.active_note: Optional[ChartNote] = None
 
-        # Score
+        # Score (logic only; final text shown on Pico)
         self.score: int = 0
         self.total_notes: int = 0
         self.max_score: int = 0
@@ -168,7 +161,9 @@ class RhythmMode:
         # Background audio scheduler
         self.audio_scheduler: Optional[AudioScheduler] = None
 
-    # ---- external hooks for InputManager ----
+    # ------------------------------------------------------------------
+    # External hooks for InputManager
+    # ------------------------------------------------------------------
 
     def stop_audio(self) -> None:
         """
@@ -194,16 +189,153 @@ class RhythmMode:
     def on_exit(self) -> None:
         """
         Called by InputManager when switching away from rhythm mode.
-        Ensures music is stopped immediately and animation stops.
+        Ensures music is stopped immediately and LEDs are cleared.
         """
         if self.debug:
             print("[Rhythm] on_exit() → stop_audio + phase=DONE")
         self.stop_audio()
         self.phase = "DONE"
+        self.led.clear_all()
+        self.led.show()
+
+    def reset(self, now: float) -> None:
+        """
+        Called by InputManager when we switch *into* rhythm mode.
+
+        After reset():
+          - phase = "WAIT_COUNTDOWN"
+          - Pi LEDs 顯示紅/橘/綠三條（選難度）
+          - 預設 difficulty = self.difficulty (第一次是 "easy")
+          - Pico 端顯示標題/SELECT MODE
+        """
+        # Stop any previous audio playback & scheduler
+        self.stop_audio()
+
+        self.phase = "WAIT_COUNTDOWN"
+        self.play_start = None
+        self.current_index = 0
+        self.active_note = None
+        self.score = 0
+
+        # Build chart for current difficulty
+        self._notes_built = False
+        self._build_chart_from_midi()
+        self._reset_notes_state()
+
+        self.total_notes = len(self.chart_notes)
+        self.max_score = self.total_notes * 2
+
+        # Reset feedback + render index
+        self.feedback_until_song_time = None
+        self.feedback_color = None
+        self.render_start_index = 0
+
+        # Create a new audio scheduler (it will be started when PLAY begins)
+        if self.audio is not None and self.total_notes > 0:
+            self.audio_scheduler = AudioScheduler(
+                self.audio, self.chart_notes, self._time_fn
+            )
+        else:
+            self.audio_scheduler = None
+
+        # 進入 WAIT_COUNTDOWN：Pi LED 用 _render_wait_countdown 畫三條彩色 key
+        self._render_wait_countdown()
+
+        if self.debug:
+            print(
+                f"[Rhythm] reset: phase=WAIT_COUNTDOWN, "
+                f"difficulty={self.difficulty}, midi={self.midi_path}, "
+                f"notes={self.total_notes}, max_score={self.max_score}"
+            )
+
+    def start_play_after_countdown(self, now: float) -> None:
+        """
+        Called by InputManager when Pico reports RHYTHM:COUNTDOWN_DONE.
+
+        This is where the actual game starts:
+          - phase = "PLAY"
+          - play_start = now
+          - AudioScheduler thread begins playback
+        """
+        if self.phase != "WAIT_COUNTDOWN":
+            # Ignore if we are already playing or done
+            if self.debug:
+                print(f"[Rhythm] start_play_after_countdown() ignored, phase={self.phase}")
+            return
+
+        self.phase = "PLAY"
+        self.play_start = now
+        self.current_index = 0
+        self.active_note = None
+        self.render_start_index = 0
+        self.feedback_color = None
+        self.feedback_until_song_time = None
+
+        # Start audio scheduler thread now that we know play_start
+        if self.audio_scheduler is not None:
+            self.audio_scheduler.set_start_time(self.play_start)
+            self.audio_scheduler.start()
+
+        if self.debug:
+            print("[Rhythm] PLAY started after external countdown")
+
+    def set_difficulty(self, difficulty: str) -> None:
+        """
+        Change difficulty to "easy" / "medium" / "hard".
+
+        Typical usage (in InputManager, while phase == WAIT_COUNTDOWN):
+          - EASY   → rhythm.set_difficulty("easy")
+          - MEDIUM → rhythm.set_difficulty("medium")
+          - HARD   → rhythm.set_difficulty("hard")
+        """
+        diff = difficulty.lower()
+        if diff not in self.midi_paths:
+            if self.debug:
+                print(f"[Rhythm] set_difficulty: unknown '{difficulty}'")
+            return
+
+        self.difficulty = diff
+        self.midi_path = self.midi_paths[diff]
+
+        if self.debug:
+            print(f"[Rhythm] set_difficulty -> {self.difficulty}, midi={self.midi_path}")
+
+        # Rebuild chart for new MIDI
+        self.stop_audio()  # stop any existing scheduler/notes
+        self._notes_built = False
+        self._build_chart_from_midi()
+        self._reset_notes_state()
+
+        self.total_notes = len(self.chart_notes)
+        self.max_score = self.total_notes * 2
+        self.current_index = 0
+        self.active_note = None
+        self.render_start_index = 0
+        self.feedback_color = None
+        self.feedback_until_song_time = None
+
+        # Recreate scheduler for new chart (will start at PLAY)
+        if self.audio is not None and self.total_notes > 0:
+            self.audio_scheduler = AudioScheduler(
+                self.audio, self.chart_notes, self._time_fn
+            )
+        else:
+            self.audio_scheduler = None
+
+        # 難度改好後，重新畫一次選難度的彩色鍵
+        if self.phase == "WAIT_COUNTDOWN":
+            self._render_wait_countdown()
 
     # ------------------------------------------------------------------
-    # Lane mapping: key → [x0, x1)
+    # Internal helpers
     # ------------------------------------------------------------------
+
+    def _reset_notes_state(self) -> None:
+        """Clear per-note runtime flags when starting a new run."""
+        for n in self.chart_notes:
+            n.hit = False
+            n.judged = False
+            n.score = 0
 
     def _build_key_x_ranges(self) -> Dict[KeyId, Tuple[int, int]]:
         """
@@ -233,61 +365,6 @@ class RhythmMode:
 
     def _key_x_range(self, key: KeyId) -> Tuple[int, int]:
         return self._key_x_ranges.get(key, (1, max(1, self.led.width - 1)))
-
-    # ------------------------------------------------------------------
-    # Reset / re-enter rhythm mode
-    # ------------------------------------------------------------------
-
-    def reset(self, now: float) -> None:
-        """
-        Called by InputManager when we switch *into* rhythm mode.
-        """
-        # Stop any previous audio playback & scheduler
-        self.stop_audio()
-
-        self.phase = "INTRO"
-        self.intro_start = now
-        self.play_start = None
-        self.current_index = 0
-        self.active_note = None
-        self.score = 0
-
-        if not self._notes_built:
-            self._build_chart_from_midi()
-            self._notes_built = True
-
-        self._reset_notes_state()
-
-        self.total_notes = len(self.chart_notes)
-        self.max_score = self.total_notes * 2
-
-        # Reset feedback + render index
-        self.feedback_until_song_time = None
-        self.feedback_color = None
-        self.render_start_index = 0
-
-        # Create a new audio scheduler (it will be started when PLAY begins)
-        if self.audio is not None and self.total_notes > 0:
-            self.audio_scheduler = AudioScheduler(
-                self.audio, self.chart_notes, self._time_fn
-            )
-        else:
-            self.audio_scheduler = None
-
-        if self.debug:
-            print(
-                f"[Rhythm] reset: notes={self.total_notes}, "
-                f"max_score={self.max_score}"
-            )
-
-    def _reset_notes_state(self) -> None:
-        """
-        Clear per-note runtime flags when starting a new run.
-        """
-        for n in self.chart_notes:
-            n.hit = False
-            n.judged = False
-            n.score = 0
 
     # ------------------------------------------------------------------
     # MIDI → chart: build melody notes
@@ -367,7 +444,8 @@ class RhythmMode:
 
         if self.debug:
             print(
-                f"[Rhythm] MIDI parsed: raw={len(raw_notes)} → melody={len(melody)}"
+                f"[Rhythm] MIDI parsed ({self.difficulty}): "
+                f"raw={len(raw_notes)} → melody={len(melody)}"
             )
 
     def _midi_note_to_key(self, midi_note: int) -> KeyId:
@@ -377,77 +455,6 @@ class RhythmMode:
         idx = (midi_note - 60) % 5
         idx = max(0, min(4, idx))
         return KeyId(idx)
-
-    # ------------------------------------------------------------------
-    # Intro rendering: "RHYTHM GAME" then countdown 5→1 (flipped Y)
-    # ------------------------------------------------------------------
-
-    def _set_xy_flipped(self, x: int, y: int, color) -> None:
-        """
-        Helper that flips Y-axis so that logical y=0 is top of the panel.
-        """
-        h = self.led.height
-        if 0 <= x < self.led.width and 0 <= y < self.led.height:
-            self.led.set_xy(x, h - 1 - y, color)
-
-    def _draw_char_flipped(self, ch: str, x0: int, y0: int, color) -> None:
-        bitmap = FONT_3x5.get(ch.upper())
-        if bitmap is None:
-            return
-        for dy, row in enumerate(bitmap):
-            for dx, bit in enumerate(row):
-                if bit == "1":
-                    self._set_xy_flipped(x0 + dx, y0 + dy, color)
-
-    def _draw_text_center_flipped(self, text: str, y: int, color) -> None:
-        text = text.upper()
-        char_w = 4  # 3 pixels + 1 spacing
-        total_w = len(text) * char_w - 1
-        x0 = max(0, (self.led.width - total_w) // 2)
-
-        x = x0
-        for ch in text:
-            self._draw_char_flipped(ch, x, y, color)
-            x += char_w
-
-    def _render_intro(self, now: float) -> None:
-        assert self.intro_start is not None
-        t = now - self.intro_start
-
-        self.led.clear_all()
-
-        if t < INTRO_COUNTDOWN_START_SEC:
-            # Show "RHYTHM GAME" only
-            self._draw_text_center_flipped("RHYTHM", 2, (0, 180, 255))
-            self._draw_text_center_flipped("GAME", 8, (255, 120, 0))
-        else:
-            # After countdown_start, show only 5→1
-            remain = max(0.0, INTRO_TOTAL_SEC - t)
-            step = int(remain / 0.5) + 1
-            digit = min(5, max(1, step))
-            self._draw_text_center_flipped(str(digit), 4, (255, 255, 255))
-
-        self.led.show()
-
-        if t >= INTRO_TOTAL_SEC:
-            self._start_play_phase(now)
-
-    def _start_play_phase(self, now: float) -> None:
-        """
-        Transition from INTRO → PLAY, and start the AudioScheduler.
-        """
-        self.phase = "PLAY"
-        self.play_start = now
-        self.current_index = 0
-        self.active_note = None
-
-        # Start audio scheduler thread now that we know play_start
-        if self.audio_scheduler is not None:
-            self.audio_scheduler.set_start_time(self.play_start)
-            self.audio_scheduler.start()
-
-        if self.debug:
-            print("[Rhythm] INTRO finished. Start PLAY phase.")
 
     # ------------------------------------------------------------------
     # Hit / miss judgment and feedback
@@ -510,6 +517,7 @@ class RhythmMode:
     # ------------------------------------------------------------------
 
     def handle_events(self, events: List[InputEvent]) -> None:
+        # Only accept hits during PLAY
         if self.phase != "PLAY":
             return
         if self.play_start is None:
@@ -539,12 +547,15 @@ class RhythmMode:
     # ------------------------------------------------------------------
 
     def update(self, now: float) -> None:
-        if self.phase == "INTRO":
-            self._render_intro(now)
+        if self.phase == "WAIT_COUNTDOWN":
+            # 選難度階段 Pi LED 顯示三條彩色 key
+            self._render_wait_countdown()
             return
 
         if self.phase == "DONE":
-            self._render_result()
+            # Keep LEDs off; final score is shown on Pico.
+            self.led.clear_all()
+            self.led.show()
             return
 
         # PLAY phase
@@ -567,6 +578,34 @@ class RhythmMode:
 
         # 5) If all notes are judged, go to DONE
         self._check_done_and_finish()
+
+    # ------------------------------------------------------------------
+    # WAIT_COUNTDOWN rendering: three colored lanes
+    # ------------------------------------------------------------------
+
+    def _render_wait_countdown(self) -> None:
+        """
+        WAIT_COUNTDOWN 階段：
+          - 不顯示 falling notes
+          - 顯示三個對應難度的彩色鍵：
+              KEY_1 (HARD)   → 紅
+              KEY_2 (MEDIUM) → 橘
+              KEY_3 (EASY)   → 綠
+        """
+        self.led.clear_all()
+        h = self.led.height
+
+        for key, color in DIFFICULTY_SELECTION_COLORS.items():
+            x0, x1 = self._key_x_range(key)
+            for x in range(x0, x1):
+                for y in range(h):
+                    self.led.set_xy(x, y, color)
+
+        self.led.show()
+
+    # ------------------------------------------------------------------
+    # Helpers for PLAY phase
+    # ------------------------------------------------------------------
 
     def _update_active_note(self, song_time: float) -> None:
         if self.active_note is None:
@@ -617,6 +656,7 @@ class RhythmMode:
     def _check_done_and_finish(self) -> None:
         """
         When all notes are judged, switch to DONE and stop audio.
+        InputManager can then send RHYTHM:RESULT:x/y to Pico.
         """
         if self.current_index < len(self.chart_notes):
             return
@@ -629,10 +669,13 @@ class RhythmMode:
 
         self.phase = "DONE"
         self.stop_audio()
+        self.led.clear_all()
+        self.led.show()
+
         if self.debug:
             print(
                 f"[Rhythm] DONE. score={self.score}/{self.max_score} "
-                f"(notes={self.total_notes})"
+                f"(notes={self.total_notes}, difficulty={self.difficulty})"
             )
 
     # ------------------------------------------------------------------
@@ -676,15 +719,16 @@ class RhythmMode:
             if self.active_note is not None and note is self.active_note:
                 boost = 1.1
             else:
-                boost = 0.8
+                boost = 0.9
 
-        # Slightly brighten as it falls down
-        brightness_factor = math.sqrt(progress) * boost
-        brightness_factor = max(0.3, min(1.0, brightness_factor))
+        # Brighten as it falls down
+        brightness_factor = 0.4 + 0.6 * math.sqrt(progress)
+        brightness_factor *= boost
+        brightness_factor = max(0.4, min(1.2, brightness_factor))
 
-        r = int(base_color[0] * brightness_factor)
-        g = int(base_color[1] * brightness_factor)
-        b = int(base_color[2] * brightness_factor)
+        r = int(min(255, base_color[0] * brightness_factor))
+        g = int(min(255, base_color[1] * brightness_factor))
+        b = int(min(255, base_color[2] * brightness_factor))
         return (r, g, b)
 
     def _render_play(self, song_time: float) -> None:
@@ -720,21 +764,11 @@ class RhythmMode:
             and self.feedback_until_song_time is not None
             and self.play_start is not None
         ):
-            if (song_time <= self.feedback_until_song_time):
+            if song_time <= self.feedback_until_song_time:
                 left_x = 0
                 right_x = w - 1
                 for y in range(h):
                     self.led.set_xy(left_x, y, self.feedback_color)
                     self.led.set_xy(right_x, y, self.feedback_color)
 
-        self.led.show()
-
-    # ------------------------------------------------------------------
-    # DONE screen: "score/max_score"
-    # ------------------------------------------------------------------
-
-    def _render_result(self) -> None:
-        self.led.clear_all()
-        text = f"{self.score}/{self.max_score}"
-        self._draw_text_center_flipped(text, 5, (255, 255, 255))
         self.led.show()

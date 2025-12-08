@@ -19,7 +19,7 @@ class AudioEngine:
 
     def __init__(
         self,
-        soundfont_path: str = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/YDP-GrandPiano-20160804.sf2",
+        soundfont_path: str = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/Nord-Black-Upright.sf2",
         sample_rate: int = 44100,
         default_velocity: int = 100,
     ) -> None:

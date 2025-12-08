@@ -8,7 +8,7 @@ from src.hardware.pico.pico_mode_display import PicoModeDisplay
 
 from src.logic.input_controller import InputController
 from src.logic.input_manager import InputManager
-from src.logic.input_event import EventType    # ★ NEW
+from src.logic.input_event import EventType
 
 from src.logic.modes.menu_mode import MenuMode
 from src.logic.modes.piano_mode import PianoMode
@@ -18,7 +18,7 @@ from src.logic.modes.midi_song_mode import MidiSongMode
 
 def print_startup_help() -> None:
     """Print a quick reference for keyboard and button controls."""
-    print("=== Pi-Ano Started (default mode: Menu) ===\n")
+    print("=== Pi-ano Started (default mode: menu) ===\n")
 
     print("Keyboard commands:")
     print("  mode menu")
@@ -80,7 +80,6 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
     return events
 
 
-
 def main() -> None:
     # ------------------------------------------------------------------
     # Hardware / engines
@@ -88,8 +87,9 @@ def main() -> None:
     led = LedMatrix()
     audio = AudioEngine()
 
+    # Pico2 HUB75 顯示器（menu / piano / rhythm / song + rhythm 專用指令）
     pico_display = PicoModeDisplay(
-        device="/dev/ttyACM0",
+        device="/dev/ttyACM0",   # 如果實際是 /dev/ttyACM1 自己改
         baudrate=115200,
         enabled=True,
     )
@@ -100,7 +100,7 @@ def main() -> None:
     menu = MenuMode(led)
     piano = PianoMode(led, audio=audio)
     rhythm = RhythmMode(led, audio=audio, debug=False)
-    song = MidiSongMode(led, audio=audio, loop_playlist=True)
+    song = MidiSongMode(led, audio=audio, loop_playlist=True, debug=False)
 
     # ------------------------------------------------------------------
     # Input sources + central manager
@@ -122,9 +122,15 @@ def main() -> None:
     print_startup_help()
 
     try:
+        pico_display.show_mode("menu")
+    except Exception as e:
+        print("[Main] initial show_mode(menu) error:", e)
+
+    try:
         while True:
             now = time.monotonic()
-            current_mode = input_manager.current_mode
+            # 用 InputManager 封裝好的 property，比直接碰 attribute 安全
+            current_mode = input_manager.current_mode_name
 
             # 1) Collect all input events for this frame
             events = poll_all_inputs(input_controller, current_mode)
@@ -157,8 +163,10 @@ def main() -> None:
         except Exception:
             pass
 
+        # 有些版本的 PicoModeDisplay 可能沒有 close()，加個防呆
         try:
-            pico_display.close()
+            if hasattr(pico_display, "close"):
+                pico_display.close()
         except Exception:
             pass
 
@@ -167,3 +175,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
