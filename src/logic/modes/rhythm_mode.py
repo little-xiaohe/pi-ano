@@ -50,9 +50,9 @@ LANE_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
 #   KEY_2 → MEDIUM (橘)
 #   KEY_3 → EASY (綠)
 DIFFICULTY_SELECTION_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
-    KeyId.KEY_1: (255, 60, 60),    # HARD → red
-    KeyId.KEY_2: (255, 180, 60),   # MEDIUM → orange
-    KeyId.KEY_3: (120, 220, 120),  # EASY → green (matcha-ish)
+    KeyId.KEY_1: (255, 0, 0),    # HARD → red
+    KeyId.KEY_2: (255, 255, 0),   # MEDIUM → orange
+    KeyId.KEY_3: (0, 200, 0),  # EASY → green (matcha-ish)
 }
 
 # Feedback colors (left/right columns)
@@ -71,6 +71,15 @@ FALL_DURATION_SEC = 1.0
 
 # Feedback lamp duration
 FEEDBACK_DURATION_SEC = 0.25
+
+# ★ 視覺前導時間：
+#   讓第一顆 note 在 MIDI 的時間軸上往後移一點，
+#   倒數結束 → 先空一小段，再看到 note 從上方掉下來。
+LEAD_IN_SEC = 1.5  # 你可以改成 2.0 看看手感
+
+# ★ 結尾多停留的秒數：
+#   所有 note 判完之後，再等這麼久才進入 DONE。
+TAIL_HOLD_SEC = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +116,8 @@ class RhythmMode:
          - phase = "PLAY"
          - AudioScheduler starts, notes begin to fall
 
-      3) When all notes are judged (hit / miss) → phase = "DONE"
+      3) When all notes are judged (hit / miss) → 等 TAIL_HOLD_SEC 秒
+         - phase 才變成 "DONE"
          - stop audio, Pi LED cleared
          - InputManager 把 score/max_score 傳給 Pico 顯示 RHYTHM:RESULT:x/y
     """
@@ -373,6 +383,9 @@ class RhythmMode:
     def _build_chart_from_midi(self) -> None:
         """
         Parse the MIDI file and build a compressed melody chart.
+        同時加入：
+          - melody clustering
+          - 視覺前導 LEAD_IN_SEC（把整首歌往後 shift 一點）
         """
         try:
             mid = mido.MidiFile(self.midi_path)
@@ -440,12 +453,23 @@ class RhythmMode:
             best = max(cluster, key=lambda n: n.midi_note)
             melody.append(best)
 
+        # ★ 加入 LEAD_IN_SEC：
+        #   讓第一顆 note 至少從 LEAD_IN_SEC 之後才開始落下，
+        #   倒數結束時不會看到 note 已經在快到底的位置。
+        if melody:
+            first_time = melody[0].time
+            if first_time < LEAD_IN_SEC:
+                shift = LEAD_IN_SEC - first_time
+                for n in melody:
+                    n.time += shift
+
         self.chart_notes = melody
 
         if self.debug:
             print(
                 f"[Rhythm] MIDI parsed ({self.difficulty}): "
-                f"raw={len(raw_notes)} → melody={len(melody)}"
+                f"raw={len(raw_notes)} → melody={len(melody)}, "
+                f"first_note_t={melody[0].time if melody else 'N/A'}"
             )
 
     def _midi_note_to_key(self, midi_note: int) -> KeyId:
@@ -576,8 +600,8 @@ class RhythmMode:
         # 4) Render falling blocks + feedback
         self._render_play(song_time)
 
-        # 5) If all notes are judged, go to DONE
-        self._check_done_and_finish()
+        # 5) If all notes are judged, go to DONE（但會加上 TAIL_HOLD_SEC 的延遲）
+        self._check_done_and_finish(song_time)
 
     # ------------------------------------------------------------------
     # WAIT_COUNTDOWN rendering: three colored lanes
@@ -653,29 +677,50 @@ class RhythmMode:
                     f"song_t={song_time:.3f}"
                 )
 
-    def _check_done_and_finish(self) -> None:
+    def _check_done_and_finish(self, song_time: float) -> None:
         """
-        When all notes are judged, switch to DONE and stop audio.
-        InputManager can then send RHYTHM:RESULT:x/y to Pico.
+        When all notes are judged, 等到最後一顆 note 的時間 + TAIL_HOLD_SEC
+        之後，才把狀態切成 DONE。
+
+        注意：這裡**不要**呼叫 stop_audio()，
+        讓合成器的殘響自然收掉。真正停止音樂會在：
+          - reset()（開始下一局）或
+          - on_exit()（離開 rhythm mode）
+        裡面處理。
         """
+        # 還有未出現的 note
         if self.current_index < len(self.chart_notes):
             return
+        # 目前還有一顆 active_note 在判定窗
         if self.active_note is not None:
             return
+        # 沒有 chart 直接略過
+        if not self.chart_notes:
+            return
 
+        # 確認全部 note 都已經被判定（hit / miss）
         all_judged = all(n.judged for n in self.chart_notes)
         if not all_judged:
             return
 
+        last_note_time = self.chart_notes[-1].time
+
+        # 還沒到「最後一顆 note + TAIL_HOLD_SEC」就先不要結束，
+        # 讓畫面維持在最後幾顆 note 的狀態一點時間。
+        if song_time < last_note_time + TAIL_HOLD_SEC:
+            return
+
+        # 真正結束：
+        # 只關 LED，不主動 stop_audio，保留音樂尾巴的殘響。
         self.phase = "DONE"
-        self.stop_audio()
         self.led.clear_all()
         self.led.show()
 
         if self.debug:
             print(
-                f"[Rhythm] DONE. score={self.score}/{self.max_score} "
-                f"(notes={self.total_notes}, difficulty={self.difficulty})"
+                f\"[Rhythm] DONE. score={self.score}/{self.max_score} "
+                f\"(notes={self.total_notes}, difficulty={self.difficulty}, "
+                f\"song_time={song_time:.2f}, last_note={last_note_time:.2f})\"
             )
 
     # ------------------------------------------------------------------
