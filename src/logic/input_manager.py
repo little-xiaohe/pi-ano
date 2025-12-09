@@ -144,7 +144,7 @@ class InputManager:
     # ------------------------------------------------------------------
 
     def handle_events(self, events: List[InputEvent], now: float) -> None:
-        # 1) 全域事件：mode switch / next mode / next song
+        # 1) 全域事件：mode switch / next mode
         for ev in events:
             if ev.type == EventType.MODE_SWITCH and ev.mode_name:
                 self._switch_mode(ev.mode_name, now)
@@ -154,12 +154,8 @@ class InputManager:
                 self._cycle_mode(now)
                 continue
 
-            if ev.type == EventType.NEXT_SONG and self.current_mode == "song":
-                try:
-                    self.song.skip_to_next(now)
-                except Exception as e:
-                    print("[InputManager] song.skip_to_next error:", e)
-                continue
+            # ★ 不在這裡處理 NEXT_SONG，讓 song mode 自己看 D24 / NEXT_SONG
+            #   事件原封不動傳給 self.song.handle_events(events)
 
         # 2) mode-specific
         if self.current_mode == "menu":
@@ -181,6 +177,7 @@ class InputManager:
 
         elif self.current_mode == "song":
             if hasattr(self.song, "handle_events"):
+                # ★ 把所有事件（包含 D24 NOTE_ON）傳給 MidiSongMode
                 self.song.handle_events(events)
 
     # ------------------------------------------------------------------
@@ -315,7 +312,7 @@ class InputManager:
 
         # 1) FAIL / NEW RECORD! 跑馬燈：給長一點時間（約 5.5 秒）
         if stage == "result_scroll":
-            if elapsed >= 5.5:
+            if elapsed >= 3.0:
                 try:
                     self.pico_display.send_rhythm_user_score_label()
                 except Exception as e:
@@ -325,7 +322,7 @@ class InputManager:
 
         # 2) YOUR SCORE 跑馬燈：4 秒
         elif stage == "user_label":
-            if elapsed >= 4.0:
+            if elapsed >= 3.0:
                 score = self._rhythm_last_score
                 max_score = self._rhythm_last_max_score
                 if max_score > 0:
@@ -351,7 +348,7 @@ class InputManager:
 
         # 4) BEST SCORE 跑馬燈：4 秒
         elif stage == "best_label":
-            if elapsed >= 4.0:
+            if elapsed >= 3.0:
                 best = self._rhythm_last_best
                 max_score = self._rhythm_last_max_score
                 if max_score > 0:

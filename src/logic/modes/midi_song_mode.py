@@ -17,6 +17,7 @@ from src.hardware.config.keys import (
     KEY_ZONES,           # ★ used to know which x columns belong to which key
 )
 from src.hardware.audio.audio_engine import AudioEngine
+from src.logic.input_event import InputEvent, EventType  # 接收 NOTE_ON / NEXT_SONG 等事件
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,10 @@ class MidiSongMode:
         # hue(t, x) = base_hue + time_speed * t + spatial_span * (x / width)
         self.rainbow_time_speed: float = 0.06   # how fast hue cycles over time
         self.rainbow_spatial_span: float = 0.35 # hue difference from left to right
+
+        # 當收到「下一首」按鍵（KEY_1 或 NEXT_SONG event）時，先記下 flag
+        # 讓下一幀 update(now) 用正確的 now 來呼叫 skip_to_next()
+        self._skip_requested: bool = False
 
     # ------------------------------------------------------------------
     # x → key mapping
@@ -244,9 +249,6 @@ class MidiSongMode:
     def _start_new_song(self, now: float) -> None:
         """Pick a new song, load events, reset scheduler, change LED palette."""
         # 1) Random palette for this song
-        #    (still used so piano / other modes can share a palette idea;
-        #     in this mode we mainly use dynamic rainbow, but keeping this
-        #     call does not hurt and keeps behavior consistent.)
         palette = random.choice(KEY_COLOR_PALETTES)
         self.led.set_key_palette(palette)
 
@@ -276,19 +278,38 @@ class MidiSongMode:
         """
         self._start_new_song(now)
 
-    def handle_events(self, events: List[object]) -> None:
+    def handle_events(self, events: List[InputEvent]) -> None:
         """
-        Currently ignore external input in song mode.
+        Handle external input in song mode.
 
-        If you later want "skip", "back", etc. via keyboard,
-        you can interpret InputEvent here.
+        - 按 KEY_1（NOTE_ON） → 要求跳下一首
+        - 或者如果上層有轉成 EventType.NEXT_SONG，也一起支援
         """
-        return
+        for ev in events:
+            # 如果 InputManager 已經把某些按鍵轉成 NEXT_SONG event
+            if ev.type == EventType.NEXT_SONG:
+                self._skip_requested = True
+                if self.debug:
+                    print("[MidiSongMode] NEXT_SONG event received")
+                continue
+
+            # 直接用 KEY_1 的 NOTE_ON 當「下一首」功能鍵
+            if ev.type == EventType.NOTE_ON and ev.key == KeyId.KEY_1:
+                self._skip_requested = True
+                if self.debug:
+                    src = getattr(ev, "source", None)
+                    print(f"[MidiSongMode] KEY_1 NOTE_ON received from source={src} → skip requested")
 
     # ------------------------------------------------------------------
     # Main update (scheduler)
     # ------------------------------------------------------------------
     def update(self, now: float) -> None:
+        # 如果上一幀有收到「下一首」請求，就在這一幀用 now 直接跳歌
+        if self._skip_requested:
+            self._skip_requested = False
+            self.skip_to_next(now)
+            return
+
         if self.start_time is None:
             # First update → pick a random song
             self._start_new_song(now)
