@@ -101,8 +101,11 @@ class AudioScheduler(threading.Thread):
             self.audio.note_on_midi(note.midi_note, vel)
             self.idx += 1
 
-        # Optional safety: stop all notes when scheduler finishes
-        if self.audio is not None:
+        # ⚠️ 重要改動：
+        # - 如果是「自然播完全部 notes」（_stop_flag 沒被設），就不要 stop_all()，
+        #   讓鋼琴音自然 decay，有「餘音」的感覺。
+        # - 如果是外部呼叫 stop() 要中途停止（切 mode / reset），這時候才清音。
+        if self.audio is not None and self._stop_flag.is_set():
             try:
                 self.audio.stop_all()
             except Exception:

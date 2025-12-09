@@ -14,10 +14,10 @@ from src.hardware.led.led_matrix import LedMatrix
 from src.hardware.config.keys import (
     KeyId,
     KEY_COLOR_PALETTES,  # still used to pick a palette per song (for consistency)
-    KEY_ZONES,           # ★ used to know which x columns belong to which key
+    KEY_ZONES,           # used to know which x columns belong to which key
 )
 from src.hardware.audio.audio_engine import AudioEngine
-from src.logic.input_event import InputEvent, EventType  # 接收 NOTE_ON / NEXT_SONG 等事件
+from src.logic.input_event import InputEvent, EventType
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +49,10 @@ class MidiSongMode:
     """
     Mode: play songs from a MIDI playlist & light 5 LED keys.
 
-    - Own scheduler (next_on_index / next_off_index).
-    - Playlist support: randomly pick a song from midi_folder.
+    - Playlist is a sorted list of MIDI files from `midi_folder`.
+    - Playback order is sequential (0,1,2,...,N-1) and loops.
     - If loop_playlist=True: automatically go to next song when finished.
+    - Press "next song" (KEY_3 via InputManager) to skip to the next in order.
     - LED:
         * Full-panel moving rainbow gradient.
         * Columns belonging to keys that are currently active get brighter.
@@ -72,13 +73,16 @@ class MidiSongMode:
 
         self.start_time: Optional[float] = None
 
-        # --- build playlist ---
+        # --- build playlist (sorted = deterministic order) ---
         folder = Path(midi_folder)
         self.playlist: List[Path] = sorted(
             [p for p in folder.glob("*.mid*") if p.is_file()]
         )
         if not self.playlist:
             raise FileNotFoundError(f"No MIDI files found in folder: {folder}")
+
+        # index of current song within playlist (0..len-1)
+        self._song_index: int = 0
 
         self.current_song: Optional[Path] = None
         self.events: List[MidiNoteEvent] = []
@@ -87,16 +91,14 @@ class MidiSongMode:
         self.active_led_notes: Dict[KeyId, ActiveLedNote] = {}
 
         # Precompute x → key mapping for the LED matrix
-        # This lets us know which rainbow column belongs to which piano key.
         self._x_to_key: Dict[int, Optional[KeyId]] = self._build_x_to_key()
 
         # Parameters for rainbow animation
-        # hue(t, x) = base_hue + time_speed * t + spatial_span * (x / width)
         self.rainbow_time_speed: float = 0.06   # how fast hue cycles over time
         self.rainbow_spatial_span: float = 0.35 # hue difference from left to right
 
-        # 當收到「下一首」按鍵（KEY_1 或 NEXT_SONG event）時，先記下 flag
-        # 讓下一幀 update(now) 用正確的 now 來呼叫 skip_to_next()
+        # When receiving EventType.NEXT_SONG (from keyboard "next"), we set a flag
+        # and handle the actual skip in update(now), which has the proper timestamp.
         self._skip_requested: bool = False
 
     # ------------------------------------------------------------------
@@ -112,12 +114,10 @@ class MidiSongMode:
         mapping: Dict[int, Optional[KeyId]] = {}
         width = self.led.width
 
-        # Default: None (no key assigned, e.g. border columns)
         for x in range(width):
             mapping[x] = None
 
         for key, (x0, x1) in KEY_ZONES.items():
-            # Clamp to LED bounds, just in case
             start = max(0, x0)
             end = min(width - 1, x1)
             for x in range(start, end + 1):
@@ -167,19 +167,12 @@ class MidiSongMode:
     # ------------------------------------------------------------------
     # Playlist / song loading
     # ------------------------------------------------------------------
-    def _pick_random_song(self) -> Path:
-        song = random.choice(self.playlist)
-        if self.debug:
-            print(f"[MidiSongMode] Picked song: {song.name}")
-        return song
-
     def _load_song_events(self, midi_path: Path) -> List[MidiNoteEvent]:
         """Parse one MIDI file into a list of MidiNoteEvent."""
         mid = mido.MidiFile(midi_path)
 
         events: List[MidiNoteEvent] = []
         active: Dict[int, tuple[float, float]] = {}  # midi_note -> (start_time, velocity)
-
         current_time = 0.0
 
         for msg in mid:
@@ -244,75 +237,79 @@ class MidiSongMode:
             return KeyId.KEY_4
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # Lifecycle / playlist control
     # ------------------------------------------------------------------
-    def _start_new_song(self, now: float) -> None:
-        """Pick a new song, load events, reset scheduler, change LED palette."""
-        # 1) Random palette for this song
+    def _start_song_by_index(self, index: int, now: float) -> None:
+        """
+        Start playing song at playlist[index], with wrapping.
+        """
+        n = len(self.playlist)
+        if n == 0:
+            return
+
+        self._song_index = index % n
+        song_path = self.playlist[self._song_index]
+
+        # Random palette per song (can be changed to deterministic if needed)
         palette = random.choice(KEY_COLOR_PALETTES)
         self.led.set_key_palette(palette)
 
-        # 2) Pick song & load events
-        self.current_song = self._pick_random_song()
-        self.events = self._load_song_events(self.current_song)
-
+        self.current_song = song_path
+        self.events = self._load_song_events(song_path)
         self.start_time = now
         self.next_on_index = 0
         self.next_off_index = 0
         self.active_led_notes.clear()
 
-        # Also ensure all notes are off when we start
+        # Ensure all notes are off when we start
         if self.audio is not None:
             self.audio.stop_all()
 
         if self.debug:
-            print(f"[MidiSongMode] Start playing: {self.current_song.name} at t={now:.3f}")
-            print(f"[MidiSongMode] Palette changed for this song")
+            print(
+                f"[MidiSongMode] Start playing index={self._song_index} "
+                f"song={song_path.name} at t={now:.3f}"
+            )
+
+    def _start_next_song(self, now: float) -> None:
+        """Convenience: jump to next song in playlist order."""
+        self._start_song_by_index(self._song_index + 1, now)
 
     def reset(self, now: float) -> None:
         """
         Called when entering song mode.
 
         Strategy:
-        - Every reset picks a new random song and restarts from beginning.
+        - Always start from the first song in the sorted playlist (index 0).
         """
-        self._start_new_song(now)
+        self._start_song_by_index(0, now)
 
     def handle_events(self, events: List[InputEvent]) -> None:
         """
         Handle external input in song mode.
 
-        - 按 KEY_1（NOTE_ON） → 要求跳下一首
-        - 或者如果上層有轉成 EventType.NEXT_SONG，也一起支援
+        - EventType.NEXT_SONG (e.g., from keyboard "next")
+            → request skip in the next update().
         """
         for ev in events:
-            # 如果 InputManager 已經把某些按鍵轉成 NEXT_SONG event
             if ev.type == EventType.NEXT_SONG:
                 self._skip_requested = True
                 if self.debug:
-                    print("[MidiSongMode] NEXT_SONG event received")
-                continue
-
-            # 直接用 KEY_1 的 NOTE_ON 當「下一首」功能鍵
-            if ev.type == EventType.NOTE_ON and ev.key == KeyId.KEY_1:
-                self._skip_requested = True
-                if self.debug:
-                    src = getattr(ev, "source", None)
-                    print(f"[MidiSongMode] KEY_1 NOTE_ON received from source={src} → skip requested")
+                    print("[MidiSongMode] NEXT_SONG event received → skip requested")
 
     # ------------------------------------------------------------------
     # Main update (scheduler)
     # ------------------------------------------------------------------
     def update(self, now: float) -> None:
-        # 如果上一幀有收到「下一首」請求，就在這一幀用 now 直接跳歌
+        # Handle pending skip request (from keyboard "next")
         if self._skip_requested:
             self._skip_requested = False
-            self.skip_to_next(now)
+            self._start_next_song(now)
             return
 
         if self.start_time is None:
-            # First update → pick a random song
-            self._start_new_song(now)
+            # First update → start current index (usually 0 after reset)
+            self._start_song_by_index(self._song_index, now)
 
         t = now - self.start_time
         eps = 0.002  # small tolerance
@@ -341,10 +338,10 @@ class MidiSongMode:
         # 4) end of song?
         if self.next_off_index >= len(self.events) and not self.active_led_notes:
             if self.loop_playlist:
-                # automatically move to next song
-                self._start_new_song(now)
+                # Go to next song in playlist order (with wrap-around)
+                self._start_next_song(now)
             else:
-                # do nothing: stay at the end frame
+                # Stay on the last frame of the song
                 pass
 
     # ------------------------------------------------------------------
@@ -354,17 +351,14 @@ class MidiSongMode:
         """Trigger one NOTE_ON (audio + add to active_led_notes)."""
         key = self._midi_note_to_key(ev.midi_note)
 
-        # LED state
         self.active_led_notes[key] = ActiveLedNote(
             key=key,
             velocity=ev.velocity,
             end_time=ev.end_time,
         )
 
-        # Audio
         if self.audio is not None:
             try:
-                # velocity already in 0.0~1.0 range
                 self.audio.note_on_midi(ev.midi_note, ev.velocity)
             except Exception as e:
                 if self.debug:
@@ -410,7 +404,6 @@ class MidiSongMode:
 
         self.led.clear_all()
 
-        # Precompute which keys are active and their "strength"
         # strength: 0.0~1.0 based on velocity, clamped
         active_strength: Dict[KeyId, float] = {}
         for key, active in self.active_led_notes.items():
@@ -421,40 +414,25 @@ class MidiSongMode:
         for x in range(width):
             key_for_col = self._x_to_key.get(x)
 
-            # Base hue for this column:
-            #   - time-driven component (scrolls horizontally in color space)
-            #   - spatial component so left vs right have different colors
             h = (
                 self.rainbow_time_speed * t
                 + self.rainbow_spatial_span * (x / max(1, width - 1))
             ) % 1.0
 
-            # Base brightness:
-            #   - if this column belongs to a key:
-            #       * if active → brighter (based on velocity)
-            #       * if not active → normal key brightness
-            #   - if no key (border) → dimmer background
             if key_for_col is not None and key_for_col in active_strength:
-                # Key is active: strong highlight
                 s = 1.0
                 v = 0.45 + 0.45 * active_strength[key_for_col]  # 0.45~0.9
             elif key_for_col is not None:
-                # Key column but currently inactive
                 s = 1.0
-                v = 0.18  # subtle but visible
+                v = 0.18
             else:
-                # Border / non-key column
                 s = 0.9
                 v = 0.08
 
             r, g, b = self._hsv_to_rgb(h, s, v)
 
-            # Optional: small vertical brightness variation (soft vignette)
             for y in range(height):
-                # You can tweak this if you want more vertical "wave"
-                # For now just apply a tiny curve so middle rows are a bit brighter
-                y_norm = (y / max(1, height - 1))  # 0..1 bottom→top (depending on wiring)
-                # Center bump around middle of panel
+                y_norm = (y / max(1, height - 1))
                 bump = 1.0 + 0.15 * math.cos((y_norm - 0.5) * math.pi)
                 rr = int(max(0, min(255, r * bump)))
                 gg = int(max(0, min(255, g * bump)))
@@ -466,7 +444,7 @@ class MidiSongMode:
 
     def skip_to_next(self, now: float) -> None:
         """
-        Skip current song and immediately start a new random one.
+        Skip current song and immediately start the next one in playlist order.
         """
         # Stop all current notes to avoid hanging sounds
         if self.audio is not None:
@@ -480,8 +458,8 @@ class MidiSongMode:
         self.led.clear_all()
         self.led.show()
 
-        # Start next song
-        self._start_new_song(now)
+        # Start next song in sequence
+        self._start_next_song(now)
 
         if self.debug:
-            print("[MidiSongMode] Skipped to next song")
+            print("[MidiSongMode] Skipped to next song by external trigger")

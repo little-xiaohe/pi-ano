@@ -1,5 +1,3 @@
-# src/logic/input_event.py
-
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
@@ -13,6 +11,7 @@ class EventType(Enum):
     MODE_SWITCH = auto()   # keyboard: mode piano / mode song ...
     NEXT_SONG = auto()     # keyboard: next （song mode 用）
     NEXT_MODE = auto()     # button: 長按 D14 → 切到下一個 mode
+    NEXT_SF2 = auto()      # button: 長按 D25 (KEY_0) → 切換 SoundFont
 
 
 @dataclass
@@ -28,4 +27,3 @@ class InputEvent:
 
     # 來源標記（"keyboard" / "button" / "ir"...），可以不填
     source: Optional[str] = None
-

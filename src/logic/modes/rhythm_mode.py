@@ -23,7 +23,7 @@ from src.logic.modes.rhythm_audio import AudioScheduler
 # 3 個難度對應的 MIDI 檔
 DEFAULT_MIDI_PATHS: Dict[str, str] = {
     "easy":   "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/twinkle-twinkle-little-star.mid",
-    "medium": "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/end-of-line.mid",
+    "medium": "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/The_Pink_Panther.mid",
     "hard":   "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/Cant_Help_Falling_In_Love.mid",
 }
 
@@ -38,27 +38,28 @@ RHYTHM_KEYS: List[KeyId] = [
 
 # 高彩度 lane 顏色（遊戲中的落下方塊用）
 LANE_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
-    KeyId.KEY_0: (255, 80, 80),    # strong red
-    KeyId.KEY_1: (255, 180, 60),   # vivid orange
-    KeyId.KEY_2: (80, 200, 255),   # bright cyan
-    KeyId.KEY_3: (140, 120, 255),  # violet
-    KeyId.KEY_4: (255, 100, 220),  # magenta-pink
+    KeyId.KEY_0: (255, 50, 50),     # Electric Red（亮但不橘）
+    KeyId.KEY_1: (255, 120, 0),     # Vivid Orange（純橘，不偏黃）
+    KeyId.KEY_2: (0, 180, 255),     # Neon Cyan（乾淨的電光藍）
+    KeyId.KEY_3: (150, 80, 255),    # Electric Purple（亮紫、辨識度高）
+    KeyId.KEY_4: (255, 0, 170),     # Hot Magenta（節奏遊戲經典亮粉紫）
 }
+
 
 # ★ 選難度時用的三個 key 顏色（Pi 大 LED 上顯示）
 #   KEY_1 → HARD (紅)
 #   KEY_2 → MEDIUM (橘)
 #   KEY_3 → EASY (綠)
 DIFFICULTY_SELECTION_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
-    KeyId.KEY_1: (255, 60, 60),    # HARD → red
-    KeyId.KEY_2: (255, 180, 60),   # MEDIUM → orange
-    KeyId.KEY_3: (120, 220, 120),  # EASY → green (matcha-ish)
+    KeyId.KEY_1: (255, 0, 0),     # HARD → red
+    KeyId.KEY_2: (255, 255, 0),   # MEDIUM → yellowish orange
+    KeyId.KEY_3: (0, 200, 0),     # EASY → green (matcha-ish)
 }
 
 # Feedback colors (left/right columns)
-FEEDBACK_COLOR_PERFECT = (120, 220, 120)   # matcha-ish green (2 points)
-FEEDBACK_COLOR_GOOD    = (255, 180, 60)    # orange (1 point)
-FEEDBACK_COLOR_MISS    = (255, 40, 40)     # bright red (miss)
+FEEDBACK_COLOR_PERFECT = (0, 255, 120)     # neon green
+FEEDBACK_COLOR_GOOD    = (255, 160, 0)     # golden orange
+FEEDBACK_COLOR_MISS    = (255, 0, 0)       # pure red (強烈錯誤提示)
 
 # Judge windows (seconds)
 PERFECT_WINDOW_SEC = 0.08    # |dt| <= 80ms → 2 points
@@ -78,7 +79,7 @@ FEEDBACK_DURATION_SEC = 0.25
 LEAD_IN_SEC = 1.0
 
 # ★ 最後一顆 note 結束後再多停留的時間
-#   - 用來控制「音樂結束後停個兩秒」再開始 post-game 流程
+#   - 用來控制「音樂結束後停個幾秒」再開始 post-game 流程
 TAIL_HOLD_SEC = 4.0
 
 
@@ -142,8 +143,9 @@ class RhythmMode:
         # Chart state
         self.chart_notes: List[ChartNote] = []
         self._notes_built: bool = False
-        self.current_index: int = 0              # index for judge window
-        self.active_note: Optional[ChartNote] = None
+
+        # per-lane miss 檢查用的 index（時間序）
+        self._miss_index: int = 0
 
         # Score (logic only; final text shown on Pico)
         self.score: int = 0
@@ -182,10 +184,8 @@ class RhythmMode:
                 pass
             self.audio_scheduler = None
 
-        # ⛔ 不要在這裡 self.audio.stop_all()
         if self.debug:
             print("[Rhythm] stop_audio(): scheduler stopped (no stop_all)")
-
 
     def on_exit(self) -> None:
         """
@@ -212,8 +212,6 @@ class RhythmMode:
 
         self.phase = "WAIT_COUNTDOWN"
         self.play_start = None
-        self.current_index = 0
-        self.active_note = None
         self.score = 0
 
         # Build chart for current difficulty
@@ -224,10 +222,11 @@ class RhythmMode:
         self.total_notes = len(self.chart_notes)
         self.max_score = self.total_notes * 2
 
-        # Reset feedback + render index
+        # Reset feedback + render index + miss index
         self.feedback_until_song_time = None
         self.feedback_color = None
         self.render_start_index = 0
+        self._miss_index = 0
 
         # Create a new audio scheduler (it will be started when PLAY begins)
         if self.audio is not None and self.total_notes > 0:
@@ -263,11 +262,10 @@ class RhythmMode:
 
         self.phase = "PLAY"
         self.play_start = now + LEAD_IN_SEC
-        self.current_index = 0
-        self.active_note = None
         self.render_start_index = 0
         self.feedback_color = None
         self.feedback_until_song_time = None
+        self._miss_index = 0
 
         # Start audio scheduler thread with the same start time
         if self.audio_scheduler is not None:
@@ -301,11 +299,10 @@ class RhythmMode:
 
         self.total_notes = len(self.chart_notes)
         self.max_score = self.total_notes * 2
-        self.current_index = 0
-        self.active_note = None
         self.render_start_index = 0
         self.feedback_color = None
         self.feedback_until_song_time = None
+        self._miss_index = 0
 
         # Recreate scheduler for new chart (will start at PLAY)
         if self.audio is not None and self.total_notes > 0:
@@ -450,7 +447,7 @@ class RhythmMode:
         return KeyId(idx)
 
     # ------------------------------------------------------------------
-    # Hit / miss judgment and feedback
+    # Hit / miss judgment and feedback（per-lane）
     # ------------------------------------------------------------------
 
     def _start_feedback(self, song_time: float, color: Tuple[int, int, int]) -> None:
@@ -505,8 +502,26 @@ class RhythmMode:
         if self.debug:
             print(f"[Rhythm] MISS key={note.key}")
 
+    # 專門處理「沒被打到的 note → 變成 miss」
+    def _update_miss_judgements(self, song_time: float) -> None:
+        """
+        依照時間序，把「時間已經超過 note.time + MISS_LATE_SEC」但尚未判定的 note
+        標記成 miss。用 self._miss_index 讓掃描是 O(1) 漸進。
+        """
+        while self._miss_index < len(self.chart_notes):
+            note = self.chart_notes[self._miss_index]
+            # 如果這顆 note 的「判定線 + MISS_LATE_SEC」還沒到，就先停在這裡
+            if song_time < note.time + MISS_LATE_SEC:
+                break
+
+            # 時間已經超過了 → 如果還沒判定，就當作 miss
+            if not note.judged:
+                self._register_miss(note, song_time)
+
+            self._miss_index += 1
+
     # ------------------------------------------------------------------
-    # Event handling: button NOTE_ON as "hit"
+    # Event handling: per-lane hit 判定
     # ------------------------------------------------------------------
 
     def handle_events(self, events: List[InputEvent]) -> None:
@@ -524,16 +539,35 @@ class RhythmMode:
                 continue
             if ev.key is None:
                 continue
-            if self.active_note is None:
+            if ev.key not in RHYTHM_KEYS:
                 continue
 
-            note = self.active_note
-            if ev.key != note.key:
-                continue
+            lane_key = ev.key
 
-            dt = song_time - note.time
-            self._register_hit(note, dt, song_time)
-            # We don't clear active_note here; _update_active_note will handle it。
+            # 在這條 lane 上，找「時間最接近、尚未判定、且 |dt| <= MISS_LATE_SEC」的 note
+            best_note: Optional[ChartNote] = None
+            best_adt: float | None = None
+            best_dt: float = 0.0
+
+            for note in self.chart_notes:
+                if note.key != lane_key:
+                    continue
+                if note.judged:
+                    continue
+
+                dt = song_time - note.time
+                adt = abs(dt)
+
+                if adt > MISS_LATE_SEC:
+                    continue
+
+                if best_adt is None or adt < best_adt:
+                    best_adt = adt
+                    best_dt = dt
+                    best_note = note
+
+            if best_note is not None:
+                self._register_hit(best_note, best_dt, song_time)
 
     # ------------------------------------------------------------------
     # Main update (called each frame by InputManager)
@@ -558,19 +592,16 @@ class RhythmMode:
 
         song_time = now - self.play_start
 
-        # 1) Update active note: check for miss
-        self._update_active_note(song_time)
+        # 1) 先把「時間已經過頭但沒被打到」的 note 標成 miss
+        self._update_miss_judgements(song_time)
 
         # 2) Slide render_start_index so we skip old notes
         self._update_render_start_index(song_time)
 
-        # 3) If there is no active note, see if the next note should enter the judge window
-        self._spawn_next_note_if_needed(song_time)
-
-        # 4) Render falling blocks + feedback
+        # 3) Render falling blocks + feedback
         self._render_play(song_time)
 
-        # 5) If all notes are judged, maybe go to DONE (with tail hold)
+        # 4) If all notes are judged, maybe go to DONE (with tail hold)
         self._check_done_and_finish(song_time)
 
     # ------------------------------------------------------------------
@@ -601,18 +632,6 @@ class RhythmMode:
     # Helpers for PLAY phase
     # ------------------------------------------------------------------
 
-    def _update_active_note(self, song_time: float) -> None:
-        if self.active_note is None:
-            return
-
-        note = self.active_note
-        dt = song_time - note.time
-
-        if dt > MISS_LATE_SEC:
-            if not note.judged:
-                self._register_miss(note, song_time)
-            self.active_note = None
-
     def _update_render_start_index(self, song_time: float) -> None:
         """
         Advance render_start_index so we don't iterate over very old notes.
@@ -624,44 +643,25 @@ class RhythmMode:
         ):
             self.render_start_index += 1
 
-    def _spawn_next_note_if_needed(self, song_time: float) -> None:
-        """
-        Bring the next note into the "active/judge" window a little bit
-        before its target time, so user can hit it slightly early.
-        """
-        if self.active_note is not None:
-            return
-        if self.current_index >= len(self.chart_notes):
-            return
-
-        note = self.chart_notes[self.current_index]
-        appear_lead = 0.2  # seconds before note.time to become hittable
-
-        if song_time >= note.time - appear_lead:
-            self.active_note = note
-            self.current_index += 1
-
-            if self.debug:
-                print(
-                    f"[Rhythm] SPAWN note key={note.key} t={note.time:.3f} "
-                    f"song_t={song_time:.3f}"
-                )
     # 5) If all notes are judged, maybe go to DONE (with tail hold)
     def _check_done_and_finish(self, song_time: float) -> None:
         """
-        When all notes are judged, switch to DONE.
+        When all notes are judged, switch to DONE after TAIL_HOLD_SEC
+        past the last note time.
         不在這裡停音，讓最後一顆 note 自然收尾。
         """
-        if self.current_index < len(self.chart_notes):
-            return
-        if self.active_note is not None:
+        if not self.chart_notes:
             return
 
-        all_judged = all(n.judged for n in self.chart_notes)
-        if not all_judged:
+        # 還有沒判完的 note → 還不能 DONE
+        if not all(n.judged for n in self.chart_notes):
             return
 
-        # 只改 phase & LED，不呼叫 stop_audio()
+        last_time = self.chart_notes[-1].time
+        if song_time < last_time + TAIL_HOLD_SEC:
+            return
+
+        # 只改 phase & LED，不呼叫 stop_audio / stop_all()
         self.phase = "DONE"
         self.led.clear_all()
         self.led.show()
@@ -671,7 +671,6 @@ class RhythmMode:
                 f"[Rhythm] DONE. score={self.score}/{self.max_score} "
                 f"(notes={self.total_notes}, difficulty={self.difficulty})"
             )
-
 
     # ------------------------------------------------------------------
     # Rendering: falling blocks + feedback columns
@@ -702,7 +701,7 @@ class RhythmMode:
 
         return max(0.0, min(1.0, progress))
 
-    def _compute_note_color(self, note: ChartNote, progress: float) -> Tuple[int, int, int]:
+    def _compute_note_color(self, note: ChartNote, progress: float, song_time: float) -> Tuple[int, int, int]:
         """
         Decide the RGB color of a falling block for this note.
         """
@@ -711,7 +710,8 @@ class RhythmMode:
             boost = 1.0
         else:
             base_color = LANE_COLORS.get(note.key, (0, 180, 255))
-            if self.active_note is not None and note is self.active_note:
+            # 接近判定時間的 note 稍微亮一點
+            if abs(song_time - note.time) <= GOOD_WINDOW_SEC:
                 boost = 1.1
             else:
                 boost = 0.9
@@ -744,7 +744,7 @@ class RhythmMode:
             # progress=1 → y near bottom (0)
             y_center = int((1.0 - progress) * (h - 1) + 0.5)
 
-            color = self._compute_note_color(note, progress)
+            color = self._compute_note_color(note, progress, song_time)
             x0, x1 = self._key_x_range(note.key)
 
             # Height = 3 cells: center ±1

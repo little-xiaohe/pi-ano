@@ -1,5 +1,3 @@
-# src/app/main.py
-
 import time
 
 from src.hardware.led.led_matrix import LedMatrix
@@ -35,6 +33,8 @@ def print_startup_help() -> None:
     print("    → used as hit buttons in rhythm mode")
     print("  Long press D14 (KEY_4)")
     print("    → cycle through modes: menu → piano → rhythm → song")
+    print("  Long press D25 (KEY_0)")
+    print("    → cycle through loaded SoundFonts (if multiple are loaded)")
     print()
     print("Press Ctrl+C in the terminal to quit.\n")
 
@@ -47,7 +47,8 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
       - Keyboard is always active (mode switching, 'next', debug notes).
       - Buttons are always active, BUT:
           * In piano mode, buttons are used *only* for mode switching
-            (e.g., NEXT_MODE), and their NOTE_ON / NOTE_OFF events are ignored.
+            (e.g., NEXT_MODE) and NEXT_SF2, and their NOTE_ON / NOTE_OFF
+            events are ignored.
           * In other modes (e.g., rhythm), button NOTE events are kept.
       - IR is only used in piano mode.
     """
@@ -68,7 +69,7 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
             btn_events = [
                 e
                 for e in btn_events
-                if e.type in (EventType.NEXT_MODE, EventType.MODE_SWITCH)
+                if e.type in (EventType.NEXT_MODE, EventType.MODE_SWITCH, EventType.NEXT_SF2)
             ]
 
         events.extend(btn_events)
@@ -175,4 +176,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

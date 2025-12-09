@@ -1,5 +1,3 @@
-# src/logic/input_manager.py
-
 from __future__ import annotations
 
 from typing import List, Optional
@@ -58,6 +56,20 @@ class InputManager:
     @property
     def current_mode_name(self) -> str:
         return self.current_mode
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _get_audio_engine(self):
+        """
+        嘗試從 piano / rhythm / song 其中之一拿到共用的 AudioEngine。
+        """
+        for mode in (self.piano, self.rhythm, self.song):
+            audio = getattr(mode, "audio", None)
+            if audio is not None:
+                return audio
+        return None
 
     # ------------------------------------------------------------------
     # Mode switching helpers
@@ -144,8 +156,18 @@ class InputManager:
     # ------------------------------------------------------------------
 
     def handle_events(self, events: List[InputEvent], now: float) -> None:
-        # 1) 全域事件：mode switch / next mode
+        # 1) 全域事件：mode switch / next mode / song-mode 專用「下一首」 / NEXT_SF2
         for ev in events:
+            # 長按 KEY_0：切換 SoundFont
+            if ev.type == EventType.NEXT_SF2:
+                audio = self._get_audio_engine()
+                if audio is not None:
+                    try:
+                        audio.cycle_soundfont()
+                    except Exception as e:
+                        print("[InputManager] audio.cycle_soundfont error:", e)
+                continue
+
             if ev.type == EventType.MODE_SWITCH and ev.mode_name:
                 self._switch_mode(ev.mode_name, now)
                 continue
@@ -154,8 +176,21 @@ class InputManager:
                 self._cycle_mode(now)
                 continue
 
-            # ★ 不在這裡處理 NEXT_SONG，讓 song mode 自己看 D24 / NEXT_SONG
-            #   事件原封不動傳給 self.song.handle_events(events)
+            # SONG mode：按 KEY_3（button）→ 下一首（依照 playlist 順序）
+            if (
+                self.current_mode == "song"
+                and ev.type == EventType.NOTE_ON
+                and ev.key == KeyId.KEY_3
+                and getattr(ev, "source", None) == "button"
+            ):
+                try:
+                    self.song.skip_to_next(now)
+                except Exception as e:
+                    print("[InputManager] song.skip_to_next error:", e)
+                continue
+
+            # 不在這裡處理 EventType.NEXT_SONG，保留給 MidiSongMode.handle_events()
+            # （例如 keyboard 輸入 'next'）
 
         # 2) mode-specific
         if self.current_mode == "menu":
@@ -167,6 +202,7 @@ class InputManager:
             for ev in events:
                 if ev.type in (EventType.NOTE_ON, EventType.NOTE_OFF):
                     if getattr(ev, "source", None) == "button":
+                        # piano mode 不用 button 來彈琴，只拿來切 mode / NEXT_SF2
                         continue
                 filtered.append(ev)
             if hasattr(self.piano, "handle_events"):
@@ -177,7 +213,7 @@ class InputManager:
 
         elif self.current_mode == "song":
             if hasattr(self.song, "handle_events"):
-                # ★ 把所有事件（包含 D24 NOTE_ON）傳給 MidiSongMode
+                # 把其它事件（例如 keyboard 'next' → NEXT_SONG）傳給 MidiSongMode
                 self.song.handle_events(events)
 
     # ------------------------------------------------------------------
@@ -310,9 +346,9 @@ class InputManager:
         stage = self._rhythm_postgame_stage
         elapsed = now - self._rhythm_postgame_t0
 
-        # 1) FAIL / NEW RECORD! 跑馬燈：給長一點時間（約 5.5 秒）
+        # 1) FAIL / NEW RECORD! 跑馬燈：給長一點時間
         if stage == "result_scroll":
-            if elapsed >= 3.0:
+            if elapsed >= 4.0:
                 try:
                     self.pico_display.send_rhythm_user_score_label()
                 except Exception as e:
@@ -320,7 +356,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_label"
                 self._rhythm_postgame_t0 = now
 
-        # 2) YOUR SCORE 跑馬燈：4 秒
+        # 2) YOUR SCORE 跑馬燈
         elif stage == "user_label":
             if elapsed >= 3.0:
                 score = self._rhythm_last_score
@@ -336,7 +372,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_score"
                 self._rhythm_postgame_t0 = now
 
-        # 3) 顯示 0/84 靜態 3 秒
+        # 3) 顯示 0/84 靜態
         elif stage == "user_score":
             if elapsed >= 3.0:
                 try:
@@ -346,7 +382,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "best_label"
                 self._rhythm_postgame_t0 = now
 
-        # 4) BEST SCORE 跑馬燈：4 秒
+        # 4) BEST SCORE 跑馬燈
         elif stage == "best_label":
             if elapsed >= 3.0:
                 best = self._rhythm_last_best
@@ -362,7 +398,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "best_score"
                 self._rhythm_postgame_t0 = now
 
-        # 5) 顯示最高分靜態 3 秒 → 回 title + reset
+        # 5) 顯示最高分靜態 → 回 title + reset
         elif stage == "best_score":
             if elapsed >= 3.0:
                 try:

@@ -1,8 +1,7 @@
-# src/hardware/audio/audio_engine.py
-
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, List
+import os
 
 import fluidsynth
 
@@ -15,11 +14,14 @@ class AudioEngine:
 
     - Channel 0: main piano (for piano mode, song mode, rhythm melody).
     - Channel 1: hit SFX (short accent note for rhythm hits).
+    - 支援多個 SoundFont，長按 KEY_0 時在它們之間輪流切換。
+    - 可以指定一個資料夾，會自動載入底下所有 .sf2 檔。
     """
 
     def __init__(
         self,
-        soundfont_path: str = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/YDP-GrandPiano-20160804.sf2",
+        soundfont_path: str = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/piano.sf2",
+        soundfont_dir: Optional[str] = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/",
         sample_rate: int = 44100,
         default_velocity: int = 100,
     ) -> None:
@@ -36,13 +38,21 @@ class AudioEngine:
         self.piano_channel: int = 0
         self.hit_channel: int = 1
 
-        # ---- load SoundFont ----
-        # print(f"[AudioEngine] Loading SoundFont: {soundfont_path}")
-        sfid = self.fs.sfload(soundfont_path)
-        # print(f"[AudioEngine] SoundFont loaded, id = {sfid}")
+        # ---- soundfont management ----
+        self._soundfont_ids: List[int] = []
+        self._soundfont_paths: List[str] = []
+        self._current_sf_index: int = 0
 
-        self.fs.program_select(self.piano_channel, sfid, 0, 0)
-        self.fs.program_select(self.hit_channel, sfid, 0, 0)
+        # 1) 如果有指定資料夾，先嘗試從資料夾載入所有 .sf2
+        if soundfont_dir is not None:
+            self._load_soundfonts_from_dir(soundfont_dir)
+
+        # 2) 如果資料夾裡沒載到任何 sf2，就退回用單一檔案 soundfont_path
+        if not self._soundfont_ids:
+            self.add_soundfont(soundfont_path)
+
+        # 套用目前的 SoundFont（index = 0）
+        self._apply_current_soundfont()
 
         # ---- channel volume ----
         channel_volume = 127
@@ -62,6 +72,91 @@ class AudioEngine:
         self.hit_note: int = 84  # C6
 
         # print("[AudioEngine] INIT complete.\n")
+
+    # ------------------------------------------------------------------
+    # SoundFont management
+    # ------------------------------------------------------------------
+
+    def _load_soundfonts_from_dir(self, directory: str) -> None:
+        """
+        掃描指定資料夾，把所有 .sf2 檔按檔名字母順序載入。
+        """
+        if not os.path.isdir(directory):
+            print(f"[AudioEngine] soundfont_dir not found: {directory}")
+            return
+
+        try:
+            entries = sorted(os.listdir(directory))
+        except Exception as e:
+            print(f"[AudioEngine] listdir failed for {directory}: {e}")
+            return
+
+        count = 0
+        for name in entries:
+            if not name.lower().endswith(".sf2"):
+                continue
+            path = os.path.join(directory, name)
+            if not os.path.isfile(path):
+                continue
+            self.add_soundfont(path)
+            count += 1
+
+        print(f"[AudioEngine] Loaded {count} SoundFont(s) from dir: {directory}")
+
+    def add_soundfont(self, path: str) -> None:
+        """
+        Load an extra SoundFont and register it in the rotation list.
+
+        不會自動切換到新的 SoundFont，只是加入清單；
+        之後呼叫 cycle_soundfont() 時才會輪到它。
+        """
+        try:
+            sfid = self.fs.sfload(path)
+        except Exception as e:
+            print(f"[AudioEngine] add_soundfont failed: {path} ({e})")
+            return
+
+        self._soundfont_ids.append(sfid)
+        self._soundfont_paths.append(path)
+
+        # 如果這是第一個 soundfont，就設定為 current
+        if len(self._soundfont_ids) == 1:
+            self._current_sf_index = 0
+
+        print(f"[AudioEngine] SoundFont added: {path} (id={sfid})")
+
+    def _apply_current_soundfont(self) -> None:
+        """
+        Apply the currently selected SoundFont to both channels.
+        """
+        if not self._soundfont_ids:
+            return
+
+        sfid = self._soundfont_ids[self._current_sf_index]
+        self.fs.program_select(self.piano_channel, sfid, 0, 0)
+        self.fs.program_select(self.hit_channel, sfid, 0, 0)
+
+        path = self._soundfont_paths[self._current_sf_index]
+        print(f"[AudioEngine] Using SoundFont[{self._current_sf_index}]: {path}")
+
+    def cycle_soundfont(self) -> None:
+        """
+        Cycle to the next loaded SoundFont (if more than one).
+
+        綁定在長按 KEY_0（NEXT_SF2）事件。
+        """
+        if not self._soundfont_ids:
+            print("[AudioEngine] cycle_soundfont(): no SoundFont loaded")
+            return
+
+        if len(self._soundfont_ids) == 1:
+            # 只有一個：重新套用一次，避免沒有反應的錯覺
+            self._apply_current_soundfont()
+            print("[AudioEngine] cycle_soundfont(): only one SoundFont, re-applied")
+            return
+
+        self._current_sf_index = (self._current_sf_index + 1) % len(self._soundfont_ids)
+        self._apply_current_soundfont()
 
     # ------------------------------------------------------------------
     # helpers

@@ -1,5 +1,3 @@
-# src/hardware/input/button_input.py
-
 import time
 from dataclasses import dataclass
 from typing import List
@@ -11,7 +9,7 @@ from src.logic.input_event import InputEvent, EventType
 from src.hardware.config.keys import KeyId
 
 
-# How long KEY_4 must be held to count as a "mode switch" long press
+# How long KEY_4 / KEY_0 must be held to count as a "long press"
 LONG_PRESS_SEC = 1.0
 
 
@@ -37,15 +35,15 @@ class ButtonChannel:
             or None if the button is currently released.
 
         long_sent:
-            Whether a long-press event (NEXT_MODE) has already been sent
-            for this continuous press. Prevents repeated NEXT_MODE events
+            Whether a long-press event (NEXT_MODE / NEXT_SF2) has already
+            been sent for this continuous press. Prevents repeated events
             while the button is held.
     """
     key: KeyId
     pin: digitalio.DigitalInOut
     last_value: bool          # True = released (pull-up), False = pressed
     press_time: float | None  # time.monotonic() when press started
-    long_sent: bool           # True if NEXT_MODE already sent for this press
+    long_sent: bool           # True if long-press event already sent
 
 
 class ButtonInput:
@@ -54,7 +52,7 @@ class ButtonInput:
 
     Wiring (using pull-up inputs, active LOW):
 
-        KEY_0 → D25
+        KEY_0 → D25  ← long-press for "next soundfont"
         KEY_1 → D24
         KEY_2 → D18
         KEY_3 → D15
@@ -69,11 +67,16 @@ class ButtonInput:
             - If held for at least LONG_PRESS_SEC:
                 → emit EventType.NEXT_MODE (once per press)
 
+        - Long press on KEY_0 (D25):
+            - If held for at least LONG_PRESS_SEC:
+                → emit EventType.NEXT_SF2 (once per press)
+
         NOTE:
             - The mapping from NOTE_ON / NOTE_OFF to actual behavior is
               handled at a higher level (InputManager + mode logic).
             - For example, in piano mode you can filter out NOTE events
-              from source="button" so that buttons only switch modes.
+              from source="button" so that buttons only switch modes or
+              trigger NEXT_SF2.
     """
 
     def __init__(self, debug: bool = True) -> None:
@@ -123,6 +126,10 @@ class ButtonInput:
                 and NEXT_MODE was not yet sent:
                     → emit NEXT_MODE once
 
+                If key == KEY_0 and held for ≥ LONG_PRESS_SEC
+                and NEXT_SF2 was not yet sent:
+                    → emit NEXT_SF2 once
+
           - Edge: LOW → HIGH  (pressed → released)
                 → emit NOTE_OFF
         """
@@ -152,23 +159,35 @@ class ButtonInput:
                     print(f"[BTN] NOTE_ON key={int(ch.key)}")
 
             # ----------------------------------------------------------
-            # While pressed: check long press on KEY_4 (D14)
+            # While pressed: check long press on KEY_4 / KEY_0
             # ----------------------------------------------------------
-            if (not current) and ch.press_time is not None:
+            if (not current) and ch.press_time is not None and (not ch.long_sent):
                 # Button is still being held down
-                if (ch.key == KeyId.KEY_4) and (not ch.long_sent):
-                    duration = now - ch.press_time
-                    if duration >= LONG_PRESS_SEC:
-                        # Emit a single NEXT_MODE event for this press
-                        events.append(
-                            InputEvent(
-                                type=EventType.NEXT_MODE,
-                                source="button",
-                            )
+                duration = now - ch.press_time
+
+                # Long press: KEY_4 → NEXT_MODE
+                if ch.key == KeyId.KEY_4 and duration >= LONG_PRESS_SEC:
+                    events.append(
+                        InputEvent(
+                            type=EventType.NEXT_MODE,
+                            source="button",
                         )
-                        ch.long_sent = True
-                        if self.debug:
-                            print("[BTN] LONG PRESS on KEY_4 → NEXT_MODE")
+                    )
+                    ch.long_sent = True
+                    if self.debug:
+                        print("[BTN] LONG PRESS on KEY_4 → NEXT_MODE")
+
+                # Long press: KEY_0 → NEXT_SF2
+                elif ch.key == KeyId.KEY_0 and duration >= LONG_PRESS_SEC:
+                    events.append(
+                        InputEvent(
+                            type=EventType.NEXT_SF2,
+                            source="button",
+                        )
+                    )
+                    ch.long_sent = True
+                    if self.debug:
+                        print("[BTN] LONG PRESS on KEY_0 → NEXT_SF2")
 
             # ----------------------------------------------------------
             # Edge: LOW → HIGH = button just released
