@@ -20,7 +20,7 @@ class AudioEngine:
 
     def __init__(
         self,
-        soundfont_path: str = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/piano.sf2",
+        soundfont_path: str = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/00_piano.sf2",
         soundfont_dir: Optional[str] = "/home/pi/pi-ano/src/hardware/audio/assets/sf2/",
         sample_rate: int = 44100,
         default_velocity: int = 100,

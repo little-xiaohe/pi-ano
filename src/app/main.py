@@ -1,4 +1,5 @@
 import time
+import signal
 
 from src.hardware.led.led_matrix import LedMatrix
 from src.hardware.audio.audio_engine import AudioEngine
@@ -88,6 +89,18 @@ def main() -> None:
     led = LedMatrix()
     audio = AudioEngine()
 
+    # ------------------------------------------------------------------
+    # Signal handling
+    # ------------------------------------------------------------------
+    # 把 SIGINT / SIGTERM 都當成 KeyboardInterrupt 處理，
+    # 讓 Ctrl+C 或 systemd stop 都會走到下面的 except/finally。
+    def handle_signal(signum, frame):
+        print(f"\n[Main] Received signal {signum}, requesting shutdown...")
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
     # Pico2 HUB75 顯示器（menu / piano / rhythm / song + rhythm 專用指令）
     pico_display = PicoModeDisplay(
         device="/dev/ttyACM0",   # 如果實際是 /dev/ttyACM1 自己改
@@ -150,7 +163,7 @@ def main() -> None:
                 time.sleep(1.0 / 60.0)
 
     except KeyboardInterrupt:
-        print("\n[Main] KeyboardInterrupt: shutting down...")
+        print("\n[Main] KeyboardInterrupt / termination signal: shutting down...")
     finally:
         # Best-effort cleanup: stop audio, clear LEDs, close Pico serial.
         try:
@@ -176,3 +189,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
