@@ -20,36 +20,18 @@ from src.hardware.config.keys import KeyId
 @dataclass
 class IRSensorChannel:
     """
-    Represents one VL53L0X distance sensor mapped to one KeyId.
+    Represents a single VL53L0X distance sensor mapped to a logical key.
 
     Attributes:
-        sensor:
-            The VL53L0X sensor instance.
-
-        key:
-            Logical key assigned to this sensor.
-
-        on_threshold_mm:
-            Distance threshold for transitioning OFF → ON.
-            If distance < on_threshold → key considered "pressed".
-
-        off_threshold_mm:
-            Distance threshold for transitioning ON → OFF.
-            Provides hysteresis so the key does not rapidly toggle.
-
-        last_present:
-            Debounced ON/OFF state. True = active/pressed.
-
-        raw_present:
-            Instantaneous threshold-based state at the last poll.
-
-        on_count / off_count:
-            Number of consecutive frames that raw_present is True/False.
-            用來做「穩定樣本」判斷，避免單一 frame 噪聲誤觸發。
-
-        last_change_time:
-            Time (monotonic seconds) when last_present was last updated.
-            用來做 OFF→ON 的 cooldown，避免手剛離開時的 noise 誤觸發。
+        sensor: The VL53L0X sensor instance.
+        key: Logical key assigned to this sensor.
+        on_threshold_mm: Distance threshold for OFF → ON transition (pressed).
+        off_threshold_mm: Distance threshold for ON → OFF transition (released, with hysteresis).
+        last_present: Debounced ON/OFF state. True = pressed.
+        raw_present: Instantaneous threshold-based state at last poll.
+        on_count: Consecutive frames raw_present is True.
+        off_count: Consecutive frames raw_present is False.
+        last_change_time: Last time last_present was updated (monotonic seconds).
     """
     sensor: adafruit_vl53l0x.VL53L0X
     key: KeyId
@@ -71,32 +53,29 @@ class IRInput:
     Multi-sensor IR input system using VL53L0X time-of-flight sensors.
 
     Features:
-        • Uses multiple sensors with XSHUT pins to assign unique I2C addresses.
-        • Each sensor maps directly to one KeyId (e.g., piano keys).
-        • Emits NOTE_ON when the debounced state transitions OFF → ON.
-        • Emits NOTE_OFF when the debounced state transitions ON → OFF.
+        - Uses multiple sensors with XSHUT pins to assign unique I2C addresses.
+        - Each sensor maps directly to one KeyId (e.g., piano keys).
+        - Emits NOTE_ON when the debounced state transitions OFF → ON.
+        - Emits NOTE_OFF when the debounced state transitions ON → OFF.
 
     Behavior:
         - raw_present = (distance < threshold) with hysteresis.
-        - We require several consecutive frames of raw_present True/False
-          before changing the debounced last_present state.
-        - OFF→ON transitions are further protected by a small cooldown,
-          to avoid "late" ghost hits after the hand leaves the sensor.
+        - Several consecutive frames of raw_present True/False are required before changing the debounced last_present state.
+        - OFF→ON transitions are protected by a cooldown to avoid ghost hits after the hand leaves the sensor.
 
-    NOTE:
-        Piano mode usually consumes these NOTE events.
-        Rhythm mode ignores IR input.
+    Note:
+        Piano mode usually consumes these NOTE events. Rhythm mode ignores IR input.
     """
 
     def __init__(
         self,
-        on_threshold_mm: int = 220,   # ~32cm 以內算「有手」
-        off_threshold_mm: int = 260,  # ~38cm 以上才算「真的離開」
+        on_threshold_mm: int = 220,   # ~32cm: hand detected if closer than this
+        off_threshold_mm: int = 260,  # ~38cm: hand considered gone if farther than this
         debug: bool = False,
         default_velocity: float = 1.0,
-        cooldown_sec: float = 0.05,   # OFF→ON 冷卻時間，防止手離開後短時間內 ghost hit
-        on_stable_frames: int = 1,    # raw_present 連續幾 frame 才算 ON
-        off_stable_frames: int = 1,   # raw_present 連續幾 frame 才算 OFF
+        cooldown_sec: float = 0.05,   # OFF→ON cooldown to prevent ghost hits after hand leaves
+        on_stable_frames: int = 1,    # Number of consecutive frames for ON debounce
+        off_stable_frames: int = 1,   # Number of consecutive frames for OFF debounce
     ) -> None:
         self.debug = debug
         self.on_threshold_mm = on_threshold_mm
@@ -113,7 +92,7 @@ class IRInput:
 
         # -------------------------------------------------------------------
         # XSHUT pins (one per sensor)
-        # IMPORTANT: must match your real wiring!
+        # IMPORTANT: Must match your actual wiring!
         # -------------------------------------------------------------------
         xshut_pins = [
             board.D21,  # Sensor 0 → KEY_0
@@ -193,36 +172,32 @@ class IRInput:
             )
 
     # -----------------------------------------------------------------------
-    # Poll sensors → produce NOTE_ON / NOTE_OFF events
+    # Poll sensors and produce NOTE_ON / NOTE_OFF events
     # -----------------------------------------------------------------------
 
     def poll(self) -> List[InputEvent]:
         """
         Read all VL53L0X sensors once and produce a list of InputEvent objects.
 
-        - raw_present 依據距離門檻 + hysteresis 計算。
-        - 連續 on_stable_frames 的 raw_present=True 才會把 last_present 變成 True。
-        - 連續 off_stable_frames 的 raw_present=False 才會把 last_present 變成 False。
-        - OFF→ON transition 若發生在 cooldown_sec 內則被忽略，避免手離開後的 ghost hit。
+        - raw_present is calculated based on distance threshold and hysteresis.
+        - last_present becomes True only after on_stable_frames consecutive raw_present=True.
+        - last_present becomes False only after off_stable_frames consecutive raw_present=False.
+        - OFF→ON transitions are ignored if they occur within cooldown_sec, to avoid ghost hits after hand leaves.
         """
         events: List[InputEvent] = []
 
         now = time.monotonic()
 
         for ch in self.channels:
-            # -----------------------------
-            # Read sensor
-            # -----------------------------
+            # Read sensor distance (in mm)
             try:
-                distance = ch.sensor.range  # in mm
+                distance = ch.sensor.range
             except OSError:
                 if self.debug:
                     print(f"[IR] Read error on key={ch.key}")
                 continue
 
-            # -----------------------------
-            # raw_present with hysteresis
-            # -----------------------------
+            # Calculate raw_present with hysteresis
             if not ch.raw_present:
                 raw_present = distance < ch.on_threshold_mm
             else:
@@ -230,9 +205,7 @@ class IRInput:
 
             ch.raw_present = raw_present
 
-            # -----------------------------
-            # Update on_count / off_count
-            # -----------------------------
+            # Update on_count / off_count for debouncing
             if raw_present:
                 ch.on_count += 1
                 ch.off_count = 0
@@ -242,13 +215,11 @@ class IRInput:
 
             debounced_present = ch.last_present
 
-            # -----------------------------
             # Debounce OFF → ON
-            # -----------------------------
             if not ch.last_present:
-                # 目前視為 OFF，要不要變成 ON？
+                # Currently OFF, check if should become ON
                 if ch.on_count >= self.on_stable_frames:
-                    # 再檢查 cooldown：剛 OFF 完的短時間內不要立刻再 ON
+                    # Check cooldown: do not allow ON immediately after OFF
                     if (now - ch.last_change_time) >= self.cooldown_sec:
                         debounced_present = True
                         ch.last_change_time = now
@@ -258,18 +229,15 @@ class IRInput:
                                 f"(dist={distance}mm, on_count={ch.on_count})"
                             )
                     else:
-                        # 在 cooldown 期間內，維持 OFF
+                        # Still in cooldown, remain OFF
                         if self.debug:
                             print(
                                 f"[IR] key={int(ch.key)} OFF→ON suppressed by cooldown "
                                 f"(dt={now - ch.last_change_time:.3f}s)"
                             )
-
-            # -----------------------------
             # Debounce ON → OFF
-            # -----------------------------
             else:
-                # 目前視為 ON，要不要變成 OFF？
+                # Currently ON, check if should become OFF
                 if ch.off_count >= self.off_stable_frames:
                     debounced_present = False
                     ch.last_change_time = now
@@ -279,9 +247,7 @@ class IRInput:
                             f"(dist={distance}mm, off_count={ch.off_count})"
                         )
 
-            # -----------------------------
             # Emit NOTE_ON / NOTE_OFF on debounced state change
-            # -----------------------------
             if debounced_present != ch.last_present:
                 if debounced_present:
                     # OFF → ON → NOTE_ON

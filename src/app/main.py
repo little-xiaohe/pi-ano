@@ -12,7 +12,83 @@ from src.logic.input_event import EventType
 from src.logic.modes.menu_mode import MenuMode
 from src.logic.modes.piano_mode import PianoMode
 from src.logic.modes.rhythm_mode import RhythmMode
+
 from src.logic.modes.midi_song_mode import MidiSongMode
+
+
+def main() -> None:
+    """Main entry point for the Pi-ano application."""
+    led = LedMatrix()
+    audio = AudioEngine()
+
+    def handle_signal(signum, frame):
+        print(f"\n[Main] Received signal {signum}, requesting shutdown...")
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    pico_display = PicoModeDisplay(
+        device="/dev/ttyACM0",   # Change to /dev/ttyACM1 if needed
+        baudrate=115200,
+        enabled=True,
+    )
+
+    menu = MenuMode(led)
+    piano = PianoMode(led, audio=audio)
+    rhythm = RhythmMode(led, audio=audio, debug=False)
+    song = MidiSongMode(led, audio=audio, loop_playlist=True, debug=False)
+
+    input_controller = InputController(
+        use_keyboard=True,
+        use_buttons=True,
+        use_ir=True,
+    )
+
+    input_manager = InputManager(
+        menu=menu,
+        piano=piano,
+        rhythm=rhythm,
+        song=song,
+        pico_display=pico_display,
+    )
+
+    print_startup_help()
+
+    try:
+        pico_display.show_mode("menu")
+    except Exception as e:
+        print("[Main] initial show_mode(menu) error:", e)
+
+    try:
+        while True:
+            now = time.monotonic()
+            current_mode = input_manager.current_mode_name
+            events = poll_all_inputs(input_controller, current_mode)
+            input_manager.handle_events(events, now)
+            input_manager.update(now)
+            if current_mode == "song":
+                time.sleep(0.001)
+            else:
+                time.sleep(1.0 / 60.0)
+    except KeyboardInterrupt:
+        print("\n[Main] KeyboardInterrupt / termination signal: shutting down...")
+    finally:
+        try:
+            led.clear_all()
+            led.show()
+        except Exception:
+            pass
+        try:
+            audio.close()
+        except Exception:
+            pass
+        try:
+            if hasattr(pico_display, "close"):
+                pico_display.close()
+        except Exception:
+            pass
+        print("[Main] Cleanup done. Bye.")
 
 
 def print_startup_help() -> None:
@@ -31,11 +107,11 @@ def print_startup_help() -> None:
 
     print("Buttons:")
     print("  KEY_0 ~ KEY_4 (D25, D24, D18, D15, D14)")
-    print("    → used as hit buttons in rhythm mode")
+    print("    - Used as hit buttons in rhythm mode")
     print("  Long press D14 (KEY_4)")
-    print("    → cycle through modes: menu → piano → rhythm → song")
+    print("    - Cycle through modes: menu → piano → rhythm → song")
     print("  Long press D25 (KEY_0)")
-    print("    → cycle through loaded SoundFonts (if multiple are loaded)")
+    print("    - Cycle through loaded SoundFonts (if multiple are loaded)")
     print()
     print("Press Ctrl+C in the terminal to quit.\n")
 
@@ -47,7 +123,7 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
     Rules:
       - Keyboard is always active (mode switching, 'next', debug notes).
       - Buttons are always active, BUT:
-          * In piano mode, buttons are used *only* for mode switching
+          * In piano mode, buttons are used only for mode switching
             (e.g., NEXT_MODE) and NEXT_SF2, and their NOTE_ON / NOTE_OFF
             events are ignored.
           * In other modes (e.g., rhythm), button NOTE events are kept.
@@ -64,9 +140,7 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
         btn_events = input_controller.buttons.poll()
 
         if current_mode == "piano":
-            # In piano mode we only keep "mode control" style events,
-            # and drop NOTE_ON / NOTE_OFF from buttons so they do not
-            # trigger PianoMode or AudioEngine.
+            # In piano mode, only keep mode control events and ignore NOTE_ON / NOTE_OFF
             btn_events = [
                 e
                 for e in btn_events
@@ -82,7 +156,8 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
     return events
 
 
-def main() -> None:
+
+
     # ------------------------------------------------------------------
     # Hardware / engines
     # ------------------------------------------------------------------
@@ -92,8 +167,8 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Signal handling
     # ------------------------------------------------------------------
-    # 把 SIGINT / SIGTERM 都當成 KeyboardInterrupt 處理，
-    # 讓 Ctrl+C 或 systemd stop 都會走到下面的 except/finally。
+    # Treat SIGINT / SIGTERM as KeyboardInterrupt so both Ctrl+C and systemd stop
+    # will trigger the same cleanup logic below.
     def handle_signal(signum, frame):
         print(f"\n[Main] Received signal {signum}, requesting shutdown...")
         raise KeyboardInterrupt()
@@ -101,9 +176,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    # Pico2 HUB75 顯示器（menu / piano / rhythm / song + rhythm 專用指令）
+    # Pico2 HUB75 display (menu / piano / rhythm / song + rhythm special commands)
     pico_display = PicoModeDisplay(
-        device="/dev/ttyACM0",   # 如果實際是 /dev/ttyACM1 自己改
+        device="/dev/ttyACM0",   # Change to /dev/ttyACM1 if needed
         baudrate=115200,
         enabled=True,
     )
@@ -143,7 +218,7 @@ def main() -> None:
     try:
         while True:
             now = time.monotonic()
-            # 用 InputManager 封裝好的 property，比直接碰 attribute 安全
+            # Use InputManager property for safety
             current_mode = input_manager.current_mode_name
 
             # 1) Collect all input events for this frame
@@ -154,7 +229,6 @@ def main() -> None:
             input_manager.update(now)
 
             # 3) Frame pacing
-            #
             # Song mode runs slightly tighter to keep MIDI scheduling smooth.
             if current_mode == "song":
                 time.sleep(0.001)
@@ -177,7 +251,7 @@ def main() -> None:
         except Exception:
             pass
 
-        # 有些版本的 PicoModeDisplay 可能沒有 close()，加個防呆
+        # Some versions of PicoModeDisplay may not have close(), so check first
         try:
             if hasattr(pico_display, "close"):
                 pico_display.close()
@@ -185,7 +259,6 @@ def main() -> None:
             pass
 
         print("[Main] Cleanup done. Bye.")
-
 
 if __name__ == "__main__":
     main()

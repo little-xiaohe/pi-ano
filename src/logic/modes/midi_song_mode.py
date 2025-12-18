@@ -168,7 +168,9 @@ class MidiSongMode:
     # Playlist / song loading
     # ------------------------------------------------------------------
     def _load_song_events(self, midi_path: Path) -> List[MidiNoteEvent]:
-        """Parse one MIDI file into a list of MidiNoteEvent."""
+        """
+        Parse one MIDI file into a list of MidiNoteEvent.
+        """
         mid = mido.MidiFile(midi_path)
 
         events: List[MidiNoteEvent] = []
@@ -272,7 +274,9 @@ class MidiSongMode:
             )
 
     def _start_next_song(self, now: float) -> None:
-        """Convenience: jump to next song in playlist order."""
+        """
+        Convenience: jump to next song in playlist order.
+        """
         self._start_song_by_index(self._song_index + 1, now)
 
     def reset(self, now: float) -> None:
@@ -301,6 +305,9 @@ class MidiSongMode:
     # Main update (scheduler)
     # ------------------------------------------------------------------
     def update(self, now: float) -> None:
+        """
+        Main update loop for song mode. Handles note scheduling, LED updates, and song transitions.
+        """
         # Handle pending skip request (from keyboard "next")
         if self._skip_requested:
             self._skip_requested = False
@@ -348,7 +355,9 @@ class MidiSongMode:
     # Helpers: audio + LED
     # ------------------------------------------------------------------
     def _trigger_note_on(self, ev: MidiNoteEvent, t: float) -> None:
-        """Trigger one NOTE_ON (audio + add to active_led_notes)."""
+        """
+        Trigger one NOTE_ON (audio + add to active_led_notes).
+        """
         key = self._midi_note_to_key(ev.midi_note)
 
         self.active_led_notes[key] = ActiveLedNote(
@@ -372,7 +381,9 @@ class MidiSongMode:
             )
 
     def _trigger_note_off(self, ev: MidiNoteEvent, t: float) -> None:
-        """Trigger NOTE_OFF (audio only; LED is handled by _update_leds)."""
+        """
+        Trigger NOTE_OFF (audio only; LED is handled by _update_leds).
+        """
         if self.audio is not None:
             try:
                 self.audio.note_off_midi(ev.midi_note)

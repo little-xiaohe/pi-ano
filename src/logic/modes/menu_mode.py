@@ -9,18 +9,19 @@ from src.logic.input_event import InputEvent
 from src.hardware.config.keys import KeyId
 
 
+
 class MenuMode:
     """
     Default menu / home screen mode.
 
     Visuals:
-      - "Pi-ANO" text (colorful, horizontally centered) near the top.
-      - Five LED key zones (KEY_0 ~ KEY_4) shown as a soft gradient,
-        with a shimmering / wave-like brightness animation.
+        - "Pi-ANO" text (colorful, horizontally centered) near the top.
+        - Five LED key zones (KEY_0 ~ KEY_4) shown as a soft gradient,
+          with a shimmering / wave-like brightness animation.
 
     NOTE:
-      This mode uses a flipped-y helper _set() so that logical (0,0)
-      is the TOP-LEFT of the panel.
+        This mode uses a flipped-y helper _set() so that logical (0,0)
+        is the TOP-LEFT of the panel.
     """
 
     def __init__(self, led: LedMatrix) -> None:
@@ -61,12 +62,16 @@ class MenuMode:
     # ---------------- public API ----------------
 
     def reset(self, now: float) -> None:
-        """Called when entering this mode."""
+        """
+        Called when entering this mode. Resets the start time for animations.
+        """
         self.start_time = now
 
     def handle_events(self, events: List[InputEvent]) -> None:
-        """Menu mode currently ignores note events."""
-        # You could add easter-egg input handling here in the future.
+        """
+        Menu mode currently ignores note events.
+        You could add easter-egg input handling here in the future.
+        """
         return
 
     def update(self, now: float) -> None:
@@ -74,8 +79,8 @@ class MenuMode:
         Called once per frame.
 
         Renders:
-          - Pi-ANO text at the top
-          - Shimmering 5-key gradient across the panel
+            - Pi-ANO text at the top
+            - Shimmering 5-key gradient across the panel
         """
         if self.start_time is None:
             self.start_time = now
@@ -149,11 +154,10 @@ class MenuMode:
         Render the 5 key zones as a moving rainbow with breathing brightness.
 
         For each key:
-          - Hue cycles through the rainbow over time (HSV -> RGB).
-          - Neighboring keys have a phase offset so the rainbow flows.
-          - Brightness also breathes (like a soft pulse).
+            - Hue cycles through the rainbow over time (HSV -> RGB).
+            - Neighboring keys have a phase offset so the rainbow flows.
+            - Brightness also breathes (like a soft pulse).
         """
-
         num_keys = len(self.menu_keys)
 
         # How fast the rainbow hue moves over time

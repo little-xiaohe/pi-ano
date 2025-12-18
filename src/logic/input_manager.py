@@ -14,10 +14,10 @@ class InputManager:
     for high-level mode transitions.
 
     Modes:
-      - "menu"   → MenuMode
-      - "piano"  → PianoMode
-      - "rhythm" → RhythmMode
-      - "song"   → MidiSongMode
+        - "menu"   → MenuMode
+        - "piano"  → PianoMode
+        - "rhythm" → RhythmMode
+        - "song"   → MidiSongMode
     """
 
     def __init__(
@@ -38,7 +38,7 @@ class InputManager:
         self.current_mode: str = "menu"
         self._mode_order = ["menu", "piano", "rhythm", "song"]
 
-        # Rhythm high scores + post-game timeline 狀態
+        # Rhythm high scores and post-game timeline state
         self._high_scores = HighScoreStore()
         self._rhythm_postgame_started: bool = False
         self._rhythm_postgame_stage: Optional[str] = None
@@ -63,7 +63,7 @@ class InputManager:
 
     def _get_audio_engine(self):
         """
-        嘗試從 piano / rhythm / song 其中之一拿到共用的 AudioEngine。
+        Try to get the shared AudioEngine from one of piano / rhythm / song.
         """
         for mode in (self.piano, self.rhythm, self.song):
             audio = getattr(mode, "audio", None)
@@ -87,7 +87,7 @@ class InputManager:
         if mode_name == self.current_mode:
             return
 
-        # 離開舊 mode
+        # Exit old mode
         if self.current_mode == "rhythm":
             if hasattr(self.rhythm, "on_exit"):
                 self.rhythm.on_exit()
@@ -97,7 +97,7 @@ class InputManager:
         self.current_mode = mode_name
         print(f"[MODE] Switched to: {self.current_mode.upper()}")
 
-        # 進入新 mode
+        # Enter new mode
         if mode_name == "menu":
             if hasattr(self.menu, "reset"):
                 self.menu.reset(now)
@@ -116,7 +116,7 @@ class InputManager:
         elif mode_name == "song":
             self.song.reset(now)
 
-        # 通知 Pico 切換模式
+        # Notify Pico to switch mode
         if self.pico_display is not None:
             try:
                 self.pico_display.show_mode(mode_name)
@@ -156,9 +156,9 @@ class InputManager:
     # ------------------------------------------------------------------
 
     def handle_events(self, events: List[InputEvent], now: float) -> None:
-        # 1) 全域事件：mode switch / next mode / song-mode 專用「下一首」 / NEXT_SF2
+        # 1) Global events: mode switch / next mode / song-mode specific "next song" / NEXT_SF2
         for ev in events:
-            # 長按 KEY_0：切換 SoundFont
+            # Long press KEY_0: switch SoundFont
             if ev.type == EventType.NEXT_SF2:
                 audio = self._get_audio_engine()
                 if audio is not None:
@@ -176,7 +176,7 @@ class InputManager:
                 self._cycle_mode(now)
                 continue
 
-            # SONG mode：按 KEY_3（button）→ 下一首（依照 playlist 順序）
+            # SONG mode: press KEY_3 (button) → next song (by playlist order)
             if (
                 self.current_mode == "song"
                 and ev.type == EventType.NOTE_ON
@@ -189,10 +189,10 @@ class InputManager:
                     print("[InputManager] song.skip_to_next error:", e)
                 continue
 
-            # 不在這裡處理 EventType.NEXT_SONG，保留給 MidiSongMode.handle_events()
-            # （例如 keyboard 輸入 'next'）
+            # Do not handle EventType.NEXT_SONG here, leave for MidiSongMode.handle_events()
+            # (e.g., keyboard input 'next')
 
-        # 2) mode-specific
+        # 2) Mode-specific event handling
         if self.current_mode == "menu":
             if hasattr(self.menu, "handle_events"):
                 self.menu.handle_events(events)
@@ -202,7 +202,7 @@ class InputManager:
             for ev in events:
                 if ev.type in (EventType.NOTE_ON, EventType.NOTE_OFF):
                     if getattr(ev, "source", None) == "button":
-                        # piano mode 不用 button 來彈琴，只拿來切 mode / NEXT_SF2
+                        # In piano mode, do not use button to play notes, only for mode switch / NEXT_SF2
                         continue
                 filtered.append(ev)
             if hasattr(self.piano, "handle_events"):
@@ -213,7 +213,7 @@ class InputManager:
 
         elif self.current_mode == "song":
             if hasattr(self.song, "handle_events"):
-                # 把其它事件（例如 keyboard 'next' → NEXT_SONG）傳給 MidiSongMode
+                # Pass other events (e.g., keyboard 'next' → NEXT_SONG) to MidiSongMode
                 self.song.handle_events(events)
 
     # ------------------------------------------------------------------
@@ -223,7 +223,7 @@ class InputManager:
     def _handle_rhythm_events(self, events: List[InputEvent], now: float) -> None:
         phase = getattr(self.rhythm, "phase", None)
 
-        # WAIT_COUNTDOWN：選難度
+        # WAIT_COUNTDOWN: select difficulty
         if phase == "WAIT_COUNTDOWN":
             for ev in events:
                 if ev.type != EventType.NOTE_ON:
@@ -261,7 +261,7 @@ class InputManager:
 
             return
 
-        # PLAY：按鍵當成 hit
+        # PLAY: treat button press as hit
         if phase == "PLAY":
             button_events: List[InputEvent] = [
                 ev
@@ -273,29 +273,29 @@ class InputManager:
                 self.rhythm.handle_events(button_events)
             return
 
-        # DONE / 其他：不處理事件
+        # DONE / others: do not handle events
         return
 
     # ------------------------------------------------------------------
-    # Rhythm post-game timeline（Pi 控制整個節奏）
+    # Rhythm post-game timeline (Pi controls the entire rhythm post-game sequence)
     # ------------------------------------------------------------------
 
     def _maybe_run_rhythm_postgame_timeline(self, now: float) -> None:
         """
-        phase == DONE 之後：
+        After phase == DONE:
 
-          第一次看到 DONE：
-            - 讀 score / max_score / difficulty
-            - update high score
-            - 送 CHALLENGE_FAIL or CHALLENGE_SUCCESS （跑馬燈一）
-            - stage = "result_scroll"
+            First time seeing DONE:
+                - Read score / max_score / difficulty
+                - Update high score
+                - Send CHALLENGE_FAIL or CHALLENGE_SUCCESS (first marquee)
+                - stage = "result_scroll"
 
-          接著時間線：
-            "result_scroll" 5.5s  → 送 USER_SCORE_LABEL   (YOUR SCORE 跑馬燈)
-            "user_label"    4.0s  → 送 USER_SCORE        (顯示 x/y)
-            "user_score"    3.0s  → 送 BEST_SCORE_LABEL  (BEST SCORE 跑馬燈)
-            "best_label"    4.0s  → 送 BEST_SCORE        (顯示 best/y)
-            "best_score"    3.0s  → 送 BACK_TO_TITLE 並 reset rhythm()
+            Timeline:
+                "result_scroll" 5.5s  → send USER_SCORE_LABEL   (YOUR SCORE marquee)
+                "user_label"    4.0s  → send USER_SCORE        (show x/y)
+                "user_score"    3.0s  → send BEST_SCORE_LABEL  (BEST SCORE marquee)
+                "best_label"    4.0s  → send BEST_SCORE        (show best/y)
+                "best_score"    3.0s  → send BACK_TO_TITLE and reset rhythm()
         """
         phase = getattr(self.rhythm, "phase", None)
 
@@ -307,7 +307,7 @@ class InputManager:
         if self.pico_display is None:
             return
 
-        # ---- 第一次看到 DONE：初始化 ----
+        # ---- First time seeing DONE: initialize ----
         if not self._rhythm_postgame_started:
             self._rhythm_postgame_started = True
             self._rhythm_postgame_stage = "result_scroll"
@@ -342,11 +342,11 @@ class InputManager:
 
             return
 
-        # ---- 之後依 stage + elapsed 控制 ----
+        # ---- Afterward, control by stage + elapsed ----
         stage = self._rhythm_postgame_stage
         elapsed = now - self._rhythm_postgame_t0
 
-        # 1) FAIL / NEW RECORD! 跑馬燈：給長一點時間
+        # 1) FAIL / NEW RECORD! marquee: give more time
         if stage == "result_scroll":
             if elapsed >= 4.0:
                 try:
@@ -356,7 +356,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_label"
                 self._rhythm_postgame_t0 = now
 
-        # 2) YOUR SCORE 跑馬燈
+        # 2) YOUR SCORE marquee
         elif stage == "user_label":
             if elapsed >= 3.0:
                 score = self._rhythm_last_score
@@ -372,7 +372,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_score"
                 self._rhythm_postgame_t0 = now
 
-        # 3) 顯示 0/84 靜態
+        # 3) Show 0/84 static
         elif stage == "user_score":
             if elapsed >= 3.0:
                 try:
@@ -382,7 +382,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "best_label"
                 self._rhythm_postgame_t0 = now
 
-        # 4) BEST SCORE 跑馬燈
+        # 4) BEST SCORE marquee
         elif stage == "best_label":
             if elapsed >= 3.0:
                 best = self._rhythm_last_best
@@ -398,7 +398,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "best_score"
                 self._rhythm_postgame_t0 = now
 
-        # 5) 顯示最高分靜態 → 回 title + reset
+        # 5) Show best score static → back to title + reset
         elif stage == "best_score":
             if elapsed >= 3.0:
                 try:
@@ -440,7 +440,7 @@ class InputManager:
         elif self.current_mode == "rhythm":
             if hasattr(self.rhythm, "update"):
                 self.rhythm.update(now)
-            # ★ 節奏遊戲結束的 post-game 美術效果
+            # ★ Rhythm game post-game visual effects
             self._maybe_run_rhythm_postgame_timeline(now)
 
         elif self.current_mode == "song":

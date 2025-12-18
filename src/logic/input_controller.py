@@ -8,9 +8,11 @@ from src.hardware.input.button_input import ButtonInput
 from src.hardware.input.ir_input import IRInput
 
 
+
 class InputController:
     """
-    Aggregates input events from all input devices.
+    Aggregates input events from all input devices (keyboard, buttons, IR).
+    Provides a unified poll() method to collect all input events.
     """
 
     def __init__(
@@ -19,15 +21,19 @@ class InputController:
         use_buttons: bool = False,
         use_ir: bool = False,
     ) -> None:
-        self.keyboard: Optional[KeyboardInput] = (
-            KeyboardInput() if use_keyboard else None
-        )
-        self.buttons: Optional[ButtonInput] = (
-            ButtonInput(debug=False) if use_buttons else None
-        )
+        """
+        Initialize input devices based on flags.
+        """
+        self.keyboard: Optional[KeyboardInput] = KeyboardInput() if use_keyboard else None
+        self.buttons: Optional[ButtonInput] = ButtonInput(debug=False) if use_buttons else None
         self.ir: Optional[IRInput] = IRInput(debug=False) if use_ir else None
 
     def poll(self) -> List[InputEvent]:
+        """
+        Poll all enabled input devices and aggregate their events into a single list.
+        Returns:
+            List[InputEvent]: All input events from enabled devices.
+        """
         events: List[InputEvent] = []
 
         if self.keyboard is not None:

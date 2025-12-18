@@ -20,7 +20,7 @@ from src.logic.modes.rhythm_audio import AudioScheduler
 # Config
 # ---------------------------------------------------------------------------
 
-# 3 個難度對應的 MIDI 檔
+# MIDI files for three difficulties
 DEFAULT_MIDI_PATHS: Dict[str, str] = {
     "easy":   "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/twinkle-twinkle-little-star.mid",
     "medium": "/home/pi/pi-ano/src/hardware/audio/assets/midi/rhythm/The_Pink_Panther.mid",
@@ -36,30 +36,30 @@ RHYTHM_KEYS: List[KeyId] = [
     KeyId.KEY_4,
 ]
 
-# 高彩度 lane 顏色（遊戲中的落下方塊用）
+# High-saturation lane colors (for falling blocks in the game)
 LANE_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
-    KeyId.KEY_0: (255, 50, 50),     # Electric Red（亮但不橘）
-    KeyId.KEY_1: (255, 120, 0),     # Vivid Orange（純橘，不偏黃）
-    KeyId.KEY_2: (0, 180, 255),     # Neon Cyan（乾淨的電光藍）
-    KeyId.KEY_3: (150, 80, 255),    # Electric Purple（亮紫、辨識度高）
-    KeyId.KEY_4: (255, 0, 170),     # Hot Magenta（節奏遊戲經典亮粉紫）
+    KeyId.KEY_0: (255, 50, 50),     # Electric Red (bright, not orange)
+    KeyId.KEY_1: (255, 120, 0),     # Vivid Orange (pure orange)
+    KeyId.KEY_2: (0, 180, 255),     # Neon Cyan (clean electric blue)
+    KeyId.KEY_3: (150, 80, 255),    # Electric Purple (bright, high contrast)
+    KeyId.KEY_4: (255, 0, 170),     # Hot Magenta (classic rhythm game pink)
 }
 
 
-# ★ 選難度時用的三個 key 顏色（Pi 大 LED 上顯示）
-#   KEY_1 → HARD (紅)
-#   KEY_2 → MEDIUM (橘)
-#   KEY_3 → EASY (綠)
+# Key colors for difficulty selection (shown on Pi LED)
+#   KEY_1 → HARD (red)
+#   KEY_2 → MEDIUM (orange)
+#   KEY_3 → EASY (green)
 DIFFICULTY_SELECTION_COLORS: Dict[KeyId, Tuple[int, int, int]] = {
     KeyId.KEY_1: (255, 0, 0),     # HARD → red
     KeyId.KEY_2: (255, 255, 0),   # MEDIUM → yellowish orange
-    KeyId.KEY_3: (0, 200, 0),     # EASY → green (matcha-ish)
+    KeyId.KEY_3: (0, 200, 0),     # EASY → green (matcha-like)
 }
 
 # Feedback colors (left/right columns)
 FEEDBACK_COLOR_PERFECT = (0, 255, 120)     # neon green
 FEEDBACK_COLOR_GOOD    = (255, 160, 0)     # golden orange
-FEEDBACK_COLOR_MISS    = (255, 0, 0)       # pure red (強烈錯誤提示)
+FEEDBACK_COLOR_MISS    = (255, 0, 0)       # pure red (strong error feedback)
 
 # Judge windows (seconds)
 PERFECT_WINDOW_SEC = 0.08    # |dt| <= 80ms → 2 points
@@ -73,13 +73,13 @@ FALL_DURATION_SEC = 1.0
 # Feedback lamp duration
 FEEDBACK_DURATION_SEC = 0.25
 
-# ★ 倒數結束後的前導時間
-#   - LEAD_IN_SEC 時間內畫面先空白 / 只看到 note 從最上面慢慢掉下來
-#   - 第一顆 note 會在倒數結束後「先從頂端掉 1 秒」才到判定線，同時出聲
+# Lead-in time after countdown ends
+#   - During LEAD_IN_SEC, screen is blank / only see notes falling from the top
+#   - First note will fall from the top for 1 second after countdown, then reach the judgment line and play sound
 LEAD_IN_SEC = 1.0
 
-# ★ 最後一顆 note 結束後再多停留的時間
-#   - 用來控制「音樂結束後停個幾秒」再開始 post-game 流程
+# Extra hold time after the last note ends
+#   - Controls how long to wait after music ends before starting post-game flow
 TAIL_HOLD_SEC = 4.0
 
 
@@ -95,24 +95,24 @@ class RhythmMode:
     Flow:
       1) InputManager switches to rhythm mode → reset(now)
          - phase = "WAIT_COUNTDOWN"
-         - Pi LED matrix 顯示三條彩色 key（紅=HARD / 橘=MEDIUM / 綠=EASY）
-         - Pico 顯示 RYTHM / SELECT MODE / 等待玩家按 D15 / D18 / D24
-         - 按鍵選好難度後，InputManager 呼叫:
+         - Pi LED matrix shows three colored keys (red=HARD / orange=MEDIUM / green=EASY)
+         - Pico displays RHYTHM / SELECT MODE / waits for player to press D15 / D18 / D24
+         - After selecting difficulty, InputManager calls:
              rhythm.set_difficulty("easy" | "medium" | "hard")
              pico_display.send_rhythm_countdown()
-         - Pico 倒數 5→1，結束時在 USB serial 印出
+         - Pico counts down 5→1, then prints to USB serial:
              RHYTHM:COUNTDOWN_DONE
 
-      2) Pi 端收到 RHYTHM:COUNTDOWN_DONE → 呼叫:
+      2) Pi receives RHYTHM:COUNTDOWN_DONE → calls:
              rhythm.start_play_after_countdown(now)
              pico_display.send_rhythm_level(difficulty)
          - phase = "PLAY"
          - AudioScheduler starts, notes begin to fall
 
-      3) 當所有 notes 判定完成後：
-         - 等待「最後一顆 note 的時間 + TAIL_HOLD_SEC」
+      3) When all notes are judged:
+         - Wait for (last note time + TAIL_HOLD_SEC)
          - phase = "DONE"
-         - Pi LED 清空，音樂尾巴自然結束（不強制 stop_all）
+         - Pi LED is cleared, music tail decays naturally (do not force stop_all)
     """
 
     def __init__(
@@ -144,7 +144,7 @@ class RhythmMode:
         self.chart_notes: List[ChartNote] = []
         self._notes_built: bool = False
 
-        # per-lane miss 檢查用的 index（時間序）
+        # Per-lane miss check index (in time order)
         self._miss_index: int = 0
 
         # Score (logic only; final text shown on Pico)
@@ -236,7 +236,7 @@ class RhythmMode:
         else:
             self.audio_scheduler = None
 
-        # 進入 WAIT_COUNTDOWN：Pi LED 用 _render_wait_countdown 畫三條彩色 key
+        # Enter WAIT_COUNTDOWN: Pi LED uses _render_wait_countdown to draw three colored keys
         self._render_wait_countdown()
 
         if self.debug:
@@ -250,10 +250,10 @@ class RhythmMode:
         """
         Called by InputManager when Pico reports RHYTHM:COUNTDOWN_DONE.
 
-        ★ 這裡加入 LEAD_IN_SEC：
-            - 真正的 play_start = now + LEAD_IN_SEC
-            - AudioScheduler 也是用同一個 start_time
-            - 第一顆 note 會從頂端掉 1 秒才到判定線，同步出聲
+        # Add LEAD_IN_SEC:
+        #   - Actual play_start = now + LEAD_IN_SEC
+        #   - AudioScheduler uses the same start_time
+        #   - First note will fall from the top for 1 second before reaching the judgment line and playing sound
         """
         if self.phase != "WAIT_COUNTDOWN":
             if self.debug:
@@ -312,7 +312,7 @@ class RhythmMode:
         else:
             self.audio_scheduler = None
 
-        # 難度改好後，重新畫一次選難度的彩色鍵
+        # After changing difficulty, redraw the colored keys for selection
         if self.phase == "WAIT_COUNTDOWN":
             self._render_wait_countdown()
 
@@ -321,7 +321,9 @@ class RhythmMode:
     # ------------------------------------------------------------------
 
     def _reset_notes_state(self) -> None:
-        """Clear per-note runtime flags when starting a new run."""
+        """
+        Clear per-note runtime flags when starting a new run.
+        """
         for n in self.chart_notes:
             n.hit = False
             n.judged = False
@@ -502,11 +504,11 @@ class RhythmMode:
         if self.debug:
             print(f"[Rhythm] MISS key={note.key}")
 
-    # 專門處理「沒被打到的 note → 變成 miss」
+    # Handle notes that were not hit and should be marked as miss
     def _update_miss_judgements(self, song_time: float) -> None:
         """
-        依照時間序，把「時間已經超過 note.time + MISS_LATE_SEC」但尚未判定的 note
-        標記成 miss。用 self._miss_index 讓掃描是 O(1) 漸進。
+        For all notes whose (note.time + MISS_LATE_SEC) has passed and are not yet judged,
+        mark them as miss. Uses self._miss_index for O(1) incremental scan.
         """
         while self._miss_index < len(self.chart_notes):
             note = self.chart_notes[self._miss_index]
@@ -525,7 +527,7 @@ class RhythmMode:
     # ------------------------------------------------------------------
 
     def handle_events(self, events: List[InputEvent]) -> None:
-        # Only accept hits during PLAY
+        # Only accept hits during PLAY phase
         if self.phase != "PLAY":
             return
         if self.play_start is None:
@@ -544,7 +546,7 @@ class RhythmMode:
 
             lane_key = ev.key
 
-            # 在這條 lane 上，找「時間最接近、尚未判定、且 |dt| <= MISS_LATE_SEC」的 note
+            # In this lane, find the note that is closest in time, not yet judged, and |dt| <= MISS_LATE_SEC
             best_note: Optional[ChartNote] = None
             best_adt: float | None = None
             best_dt: float = 0.0
@@ -574,8 +576,11 @@ class RhythmMode:
     # ------------------------------------------------------------------
 
     def update(self, now: float) -> None:
+        """
+        Main update loop for rhythm mode. Handles WAIT_COUNTDOWN, PLAY, and DONE phases.
+        """
         if self.phase == "WAIT_COUNTDOWN":
-            # 選難度階段 Pi LED 顯示三條彩色 key
+            # Difficulty selection phase: Pi LED shows three colored keys
             self._render_wait_countdown()
             return
 
@@ -587,12 +592,12 @@ class RhythmMode:
 
         # PLAY phase
         if self.play_start is None:
-            # 理論上不會發生，保底處理
+            # Should not happen, but handle gracefully
             self.play_start = now
 
         song_time = now - self.play_start
 
-        # 1) 先把「時間已經過頭但沒被打到」的 note 標成 miss
+        # 1) Mark notes as miss if their time has passed and they were not hit
         self._update_miss_judgements(song_time)
 
         # 2) Slide render_start_index so we skip old notes
@@ -610,12 +615,12 @@ class RhythmMode:
 
     def _render_wait_countdown(self) -> None:
         """
-        WAIT_COUNTDOWN 階段：
-          - 不顯示 falling notes
-          - 顯示三個對應難度的彩色鍵：
-              KEY_1 (HARD)   → 紅
-              KEY_2 (MEDIUM) → 橘
-              KEY_3 (EASY)   → 綠
+        WAIT_COUNTDOWN phase:
+          - Do not show falling notes
+          - Show three colored keys for difficulty selection:
+              KEY_1 (HARD)   → red
+              KEY_2 (MEDIUM) → orange
+              KEY_3 (EASY)   → green
         """
         self.led.clear_all()
         h = self.led.height

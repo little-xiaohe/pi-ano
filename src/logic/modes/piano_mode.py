@@ -11,7 +11,7 @@ from src.hardware.audio.audio_engine import AudioEngine
 
 WHITE = (255, 255, 255)
 
-# 打開這個可以看到每個 NOTE_ON / NOTE_OFF 事件（含來源來源）
+# Enable this to print every NOTE_ON / NOTE_OFF event (with source)
 DEBUG_PIANO_EVENTS = False
 
 
@@ -44,34 +44,39 @@ class PianoMode:
     # ---- high-level API for notes ----
 
     def note_on(self, key: KeyId, velocity: float = 1.0) -> None:
+        """
+        Turn on a key (NOTE_ON), update velocity, and trigger audio if newly pressed.
+        """
         if key not in self.notes:
             return
 
         v = max(0.0, min(1.0, velocity))
         state = self.notes[key]
 
-        # 如果這個 key 已經是 ON：
-        # → 只更新 velocity（讓 LED 亮度可以跟著變）
-        # → 但是「不要再呼叫 audio.note_on」，避免聲音一直被 retrigger
+        # If this key is already ON:
+        # → Only update velocity (so LED brightness can change)
+        # → But do NOT call audio.note_on again to avoid retriggering sound
         if state.is_on:
             state.velocity = v
             return
 
-        # 第一次從 OFF → ON
+        # First time OFF → ON
         state.is_on = True
         state.velocity = v
 
-        # ★ 這時候才觸發一次鋼琴音
+        # Trigger piano sound only once when key is pressed
         if self.audio is not None:
             self.audio.note_on(key, v)
 
     def note_off(self, key: KeyId) -> None:
+        """
+        Turn off a key (NOTE_OFF) and stop audio for that key.
+        """
         if key not in self.notes:
             return
         self.notes[key].is_on = False
         if self.audio is not None:
             self.audio.note_off(key)
-        # print(f"[Piano] NOTE_OFF key={key}")
 
     def handle_events(self, events: List[InputEvent]) -> None:
         """
@@ -92,21 +97,21 @@ class PianoMode:
     # ---- rendering ----
 
     def update(self, now: float) -> None:
-        # 這一幀要畫什麼
+        """
+        Render the current frame: light up all keys that are ON with their velocity.
+        """
         self.led.clear_all()
 
-        any_on = False
         for key, state in self.notes.items():
             if state.is_on:
-                any_on = True
                 self.led.fill_key(key, brightness=state.velocity)
-
-        # if any_on:
-        #     print("[Piano] update: some keys ON")
 
         self.led.show()
 
     def randomize_palette(self) -> None:
-        hue_offset = random.random()        # 0.0 ~ 1.0 隨機起始色
+        """
+        Randomize the key color palette using a random hue offset.
+        """
+        hue_offset = random.random()        # 0.0 ~ 1.0 random starting hue
         palette = make_rainbow_palette(hue_offset=hue_offset)
         self.led.set_key_palette(palette)

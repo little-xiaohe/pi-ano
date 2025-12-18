@@ -12,27 +12,14 @@ class KeyboardInput:
     """
     Reads commands from stdin (non-blocking) and converts them into InputEvent objects.
 
-    This is mainly a development / debugging input source so you can
+    This is mainly a development/debugging input source so you can
     control modes and trigger keys from a terminal.
 
     Supported commands (case-insensitive):
-
-        on <key> [velocity]
-            - Emit NOTE_ON for the given key index.
-            - <key>: integer index that maps to KeyId
-            - [velocity]: optional float, default = 1.0
-
-        off <key>
-            - Emit NOTE_OFF for the given key index.
-
-        mode menu
-        mode piano
-        mode rhythm
-        mode song
-            - Emit MODE_SWITCH to the given mode name.
-
-        next
-            - Emit NEXT_SONG (typically handled only in song mode).
+        on <key> [velocity]   - Emit NOTE_ON for the given key index. [velocity] is optional (default 1.0)
+        off <key>             - Emit NOTE_OFF for the given key index.
+        mode <name>           - Emit MODE_SWITCH to the given mode name (menu, piano, rhythm, song).
+        next                  - Emit NEXT_SONG (typically handled only in song mode).
 
     Notes:
         - poll() is non-blocking: if there is no line in stdin, it returns [].
@@ -68,12 +55,9 @@ class KeyboardInput:
         parts = line.split()
         cmd = parts[0].lower()
 
-        # -------------------------
-        # MODE SWITCH
-        # -------------------------
+        # Handle mode switching
         if cmd == "mode" and len(parts) >= 2:
             mode_name = parts[1].lower()
-
             if mode_name in ("menu", "piano", "rhythm", "song"):
                 events.append(
                     InputEvent(
@@ -90,9 +74,7 @@ class KeyboardInput:
                 )
             return events
 
-        # -------------------------
-        # NEXT SONG (only meaningful in song mode)
-        # -------------------------
+        # Handle next song (only meaningful in song mode)
         if cmd == "next":
             events.append(
                 InputEvent(
@@ -103,9 +85,7 @@ class KeyboardInput:
             print("[KB] NEXT_SONG requested")
             return events
 
-        # -------------------------
-        # NOTE ON
-        # -------------------------
+        # Handle NOTE ON
         if cmd == "on" and len(parts) >= 2:
             try:
                 key_idx = int(parts[1])
@@ -132,9 +112,7 @@ class KeyboardInput:
             print(f"[KB] NOTE_ON key={key} vel={velocity}")
             return events
 
-        # -------------------------
-        # NOTE OFF
-        # -------------------------
+        # Handle NOTE OFF
         if cmd == "off" and len(parts) >= 2:
             try:
                 key_idx = int(parts[1])
@@ -153,9 +131,7 @@ class KeyboardInput:
             print(f"[KB] NOTE_OFF key={key}")
             return events
 
-        # -------------------------
         # Unknown command
-        # -------------------------
         print("Unknown command. Use:")
         print("  on <key> [vel]")
         print("  off <key>")

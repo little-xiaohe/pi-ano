@@ -73,6 +73,11 @@ class AudioScheduler(threading.Thread):
     # ------------------------------------------------------------------
 
     def run(self) -> None:
+        """
+        Main thread loop: schedules and plays notes at the correct time.
+        Waits for start_time to be set, then plays notes in order.
+        If stopped externally, stops all audio immediately; otherwise, lets notes decay naturally.
+        """
         if self.audio is None:
             return
 
@@ -101,10 +106,10 @@ class AudioScheduler(threading.Thread):
             self.audio.note_on_midi(note.midi_note, vel)
             self.idx += 1
 
-        # ⚠️ 重要改動：
-        # - 如果是「自然播完全部 notes」（_stop_flag 沒被設），就不要 stop_all()，
-        #   讓鋼琴音自然 decay，有「餘音」的感覺。
-        # - 如果是外部呼叫 stop() 要中途停止（切 mode / reset），這時候才清音。
+        # Important behavior:
+        # - If all notes finish naturally (stop flag not set), do not call stop_all(),
+        #   so piano sound can decay naturally.
+        # - If externally stopped (stop flag set), stop all audio immediately.
         if self.audio is not None and self._stop_flag.is_set():
             try:
                 self.audio.stop_all()

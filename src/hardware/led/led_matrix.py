@@ -2,10 +2,10 @@
 """
 led_matrix.py
 -------------
-Low-level + mid-level abstraction for the 16x32 LED matrix.
+Low-level and high-level abstraction for the 16x32 LED matrix.
 
-- LOW-LEVEL: coordinate mapping, raw pixel writes.
-- HIGH-LEVEL: drawing rectangles and piano key blocks.
+LOW-LEVEL: coordinate mapping, raw pixel writes.
+HIGH-LEVEL: drawing rectangles and piano key blocks.
 
 Key IDs and their zones are defined in hardware.config.keys.
 """
@@ -35,13 +35,13 @@ AUTO_WRITE: bool = False
 class LedMatrix:
     """
     LOW-LEVEL responsibilities:
-    - Initialize NeoPixel strip.
-    - Map (x, y) → linear index.
-    - Write individual pixels, clear, show.
+        - Initialize NeoPixel strip.
+        - Map (x, y) to linear index.
+        - Write individual pixels, clear, show.
 
     HIGH-LEVEL responsibilities:
-    - Draw rectangles.
-    - Fill / clear piano key blocks (using KeyId and KEY_ZONES).
+        - Draw rectangles.
+        - Fill/clear piano key blocks (using KeyId and KEY_ZONES).
     """
 
     def __init__(
@@ -67,10 +67,17 @@ class LedMatrix:
     # ---------------- LOW-LEVEL mapping ----------------
 
     def _validate_xy(self, x: int, y: int) -> None:
+        """
+        Raise ValueError if (x, y) is out of bounds.
+        """
         if not (0 <= x < self.width and 0 <= y < self.height):
             raise ValueError(f"Invalid (x, y) = ({x}, {y})")
 
     def _xy_to_index(self, x: int, y: int) -> int:
+        """
+        Map (x, y) coordinates to the linear NeoPixel index.
+        Handles two 16x16 panels, with zigzag wiring per row.
+        """
         self._validate_xy(x, y)
 
         if x < 16:
@@ -87,16 +94,25 @@ class LedMatrix:
 
         return panel * (16 * 16) + index_in_panel
 
-    # ---------------- LOW-LEVEL pixel ops ----------------
+    # ---------------- LOW-LEVEL pixel operations ----------------
 
     def set_xy(self, x: int, y: int, color: Tuple[int, int, int]) -> None:
+        """
+        Set the color of a single pixel at (x, y).
+        """
         idx = self._xy_to_index(x, y)
         self._pixels[idx] = color
 
     def clear_all(self) -> None:
+        """
+        Set all pixels to black (off).
+        """
         self._pixels.fill((0, 0, 0))
 
     def show(self) -> None:
+        """
+        Update the physical LED matrix to reflect all changes.
+        """
         self._pixels.show()
 
     # ---------------- HIGH-LEVEL: palette control ----------------
@@ -104,9 +120,7 @@ class LedMatrix:
     def set_key_palette(self, palette: dict[KeyId, tuple[int, int, int]]) -> None:
         """
         Replace the current per-key color palette.
-
-        Typically called by modes (piano / song) when they want
-        to randomize key colors.
+        Typically called by modes (piano/song) to randomize key colors.
         """
         self.key_colors = dict(palette)
 
@@ -120,6 +134,9 @@ class LedMatrix:
         y_end: int,
         color: Tuple[int, int, int],
     ) -> None:
+        """
+        Fill a rectangle from (x_start, y_start) to (x_end, y_end) with the given color.
+        """
         x_start = max(0, x_start)
         y_start = max(0, y_start)
         x_end = min(self.width - 1, x_end)
@@ -153,15 +170,11 @@ class LedMatrix:
         Fill one piano key block using the KEY_ZONES definition.
         """
         key_id = self._normalize_key(key)
-        if key_id is None:
-            return
-
-        if key_id not in KEY_ZONES:
+        if key_id is None or key_id not in KEY_ZONES:
             return
 
         if color is None:
             color = self.key_colors.get(key_id, (255, 255, 255))
-
 
         x_start, x_end = KEY_ZONES[key_id]
 
@@ -198,8 +211,7 @@ class LedMatrix:
         self.clear_all()
         for key_id in ALL_KEYS:
             x_start, x_end = KEY_ZONES[key_id]
-            if color is None:
-                color = self.key_colors.get(key_id, (255, 255, 255))
+            color = self.key_colors.get(key_id, (255, 255, 255))
             for x in range(x_start, x_end + 1):
                 for y in range(self.height):
                     self.set_xy(x, y, color)
