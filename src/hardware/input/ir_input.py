@@ -38,13 +38,28 @@ class IRSensorChannel:
             Provides hysteresis so the key does not rapidly toggle.
 
         last_present:
-            Previous ON/OFF state. True = active/pressed.
+            Debounced ON/OFF state. True = active/pressed.
+
+        raw_present:
+            Instantaneous threshold-based state at the last poll.
+
+        on_count / off_count:
+            Number of consecutive frames that raw_present is True/False.
+            用來做「穩定樣本」判斷，避免單一 frame 噪聲誤觸發。
+
+        last_change_time:
+            Time (monotonic seconds) when last_present was last updated.
+            用來做 OFF→ON 的 cooldown，避免手剛離開時的 noise 誤觸發。
     """
     sensor: adafruit_vl53l0x.VL53L0X
     key: KeyId
     on_threshold_mm: int
     off_threshold_mm: int
     last_present: bool = False
+    raw_present: bool = False
+    on_count: int = 0
+    off_count: int = 0
+    last_change_time: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -58,13 +73,15 @@ class IRInput:
     Features:
         • Uses multiple sensors with XSHUT pins to assign unique I2C addresses.
         • Each sensor maps directly to one KeyId (e.g., piano keys).
-        • Produces NOTE_ON continuously while a hand is detected close enough.
-        • Produces NOTE_OFF when the hand leaves (based on hysteresis).
+        • Emits NOTE_ON when the debounced state transitions OFF → ON.
+        • Emits NOTE_OFF when the debounced state transitions ON → OFF.
 
     Behavior:
-        - "present" means the distance is within ON/OFF threshold rules.
-        - While present, NOTE_ON is emitted every poll (good for velocity control).
-        - When present transitions True → False, a single NOTE_OFF is emitted.
+        - raw_present = (distance < threshold) with hysteresis.
+        - We require several consecutive frames of raw_present True/False
+          before changing the debounced last_present state.
+        - OFF→ON transitions are further protected by a small cooldown,
+          to avoid "late" ghost hits after the hand leaves the sensor.
 
     NOTE:
         Piano mode usually consumes these NOTE events.
@@ -73,15 +90,21 @@ class IRInput:
 
     def __init__(
         self,
-        on_threshold_mm: int = 220,
-        off_threshold_mm: int = 260,
+        on_threshold_mm: int = 220,   # ~32cm 以內算「有手」
+        off_threshold_mm: int = 260,  # ~38cm 以上才算「真的離開」
         debug: bool = False,
         default_velocity: float = 1.0,
+        cooldown_sec: float = 0.05,   # OFF→ON 冷卻時間，防止手離開後短時間內 ghost hit
+        on_stable_frames: int = 1,    # raw_present 連續幾 frame 才算 ON
+        off_stable_frames: int = 1,   # raw_present 連續幾 frame 才算 OFF
     ) -> None:
         self.debug = debug
         self.on_threshold_mm = on_threshold_mm
         self.off_threshold_mm = off_threshold_mm
         self.default_velocity = max(0.0, min(1.0, default_velocity))
+        self.cooldown_sec = cooldown_sec
+        self.on_stable_frames = on_stable_frames
+        self.off_stable_frames = off_stable_frames
 
         # -------------------------------------------------------------------
         # Create shared I2C bus
@@ -153,6 +176,7 @@ class IRInput:
         # -------------------------------------------------------------------
         self.channels: List[IRSensorChannel] = []
 
+        now = time.monotonic()
         for sensor, key in zip(sensors, key_map):
             self.channels.append(
                 IRSensorChannel(
@@ -160,6 +184,11 @@ class IRInput:
                     key=key,
                     on_threshold_mm=self.on_threshold_mm,
                     off_threshold_mm=self.off_threshold_mm,
+                    last_present=False,
+                    raw_present=False,
+                    on_count=0,
+                    off_count=0,
+                    last_change_time=now,
                 )
             )
 
@@ -171,14 +200,14 @@ class IRInput:
         """
         Read all VL53L0X sensors once and produce a list of InputEvent objects.
 
-        NOTE_ON:
-            Emitted *every frame* while hand is detected (present=True).
-            Includes velocity (constant by default).
-
-        NOTE_OFF:
-            Emitted only once when present transitions True → False.
+        - raw_present 依據距離門檻 + hysteresis 計算。
+        - 連續 on_stable_frames 的 raw_present=True 才會把 last_present 變成 True。
+        - 連續 off_stable_frames 的 raw_present=False 才會把 last_present 變成 False。
+        - OFF→ON transition 若發生在 cooldown_sec 內則被忽略，避免手離開後的 ghost hit。
         """
         events: List[InputEvent] = []
+
+        now = time.monotonic()
 
         for ch in self.channels:
             # -----------------------------
@@ -192,46 +221,86 @@ class IRInput:
                 continue
 
             # -----------------------------
-            # Presence detection (hysteresis)
+            # raw_present with hysteresis
+            # -----------------------------
+            if not ch.raw_present:
+                raw_present = distance < ch.on_threshold_mm
+            else:
+                raw_present = distance < ch.off_threshold_mm
+
+            ch.raw_present = raw_present
+
+            # -----------------------------
+            # Update on_count / off_count
+            # -----------------------------
+            if raw_present:
+                ch.on_count += 1
+                ch.off_count = 0
+            else:
+                ch.off_count += 1
+                ch.on_count = 0
+
+            debounced_present = ch.last_present
+
+            # -----------------------------
+            # Debounce OFF → ON
             # -----------------------------
             if not ch.last_present:
-                present = distance < ch.on_threshold_mm
-            else:
-                present = distance < ch.off_threshold_mm
-
-            if self.debug:
-                print(
-                    f"[IR] key={int(ch.key)} "
-                    f"dist={distance}mm "
-                    f"ON<th{ch.on_threshold_mm}, OFF>th{ch.off_threshold_mm} "
-                    f"{ch.last_present} → {present}"
-                )
-
-            # -----------------------------
-            # If present → continuous NOTE_ON
-            # -----------------------------
-            if present:
-                velocity = self.default_velocity
-                events.append(
-                    InputEvent(
-                        type=EventType.NOTE_ON,
-                        key=ch.key,
-                        velocity=velocity,
-                        source="ir",
-                    )
-                )
-
-                if self.debug:
-                    print(
-                        f"[IR] NOTE_ON key={ch.key} "
-                        f"dist={distance}mm vel={velocity:.2f}"
-                    )
+                # 目前視為 OFF，要不要變成 ON？
+                if ch.on_count >= self.on_stable_frames:
+                    # 再檢查 cooldown：剛 OFF 完的短時間內不要立刻再 ON
+                    if (now - ch.last_change_time) >= self.cooldown_sec:
+                        debounced_present = True
+                        ch.last_change_time = now
+                        if self.debug:
+                            print(
+                                f"[IR] key={int(ch.key)} DEBOUNCED ON "
+                                f"(dist={distance}mm, on_count={ch.on_count})"
+                            )
+                    else:
+                        # 在 cooldown 期間內，維持 OFF
+                        if self.debug:
+                            print(
+                                f"[IR] key={int(ch.key)} OFF→ON suppressed by cooldown "
+                                f"(dt={now - ch.last_change_time:.3f}s)"
+                            )
 
             # -----------------------------
-            # If transitioned ON → OFF → NOTE_OFF
+            # Debounce ON → OFF
             # -----------------------------
             else:
-                if ch.last_present:
+                # 目前視為 ON，要不要變成 OFF？
+                if ch.off_count >= self.off_stable_frames:
+                    debounced_present = False
+                    ch.last_change_time = now
+                    if self.debug:
+                        print(
+                            f"[IR] key={int(ch.key)} DEBOUNCED OFF "
+                            f"(dist={distance}mm, off_count={ch.off_count})"
+                        )
+
+            # -----------------------------
+            # Emit NOTE_ON / NOTE_OFF on debounced state change
+            # -----------------------------
+            if debounced_present != ch.last_present:
+                if debounced_present:
+                    # OFF → ON → NOTE_ON
+                    velocity = self.default_velocity
+                    events.append(
+                        InputEvent(
+                            type=EventType.NOTE_ON,
+                            key=ch.key,
+                            velocity=velocity,
+                            source="ir",
+                        )
+                    )
+                    if self.debug:
+                        print(
+                            f"[IR] NOTE_ON key={ch.key} "
+                            f"dist={distance}mm vel={velocity:.2f}"
+                        )
+                else:
+                    # ON → OFF → NOTE_OFF
                     events.append(
                         InputEvent(
                             type=EventType.NOTE_OFF,
@@ -242,6 +311,14 @@ class IRInput:
                     if self.debug:
                         print(f"[IR] NOTE_OFF key={ch.key}")
 
-            ch.last_present = present
+            if self.debug:
+                print(
+                    f"[IR] key={int(ch.key)} dist={distance}mm "
+                    f"raw_present={raw_present} "
+                    f"on_count={ch.on_count} off_count={ch.off_count} "
+                    f"debounced={debounced_present}"
+                )
+
+            ch.last_present = debounced_present
 
         return events

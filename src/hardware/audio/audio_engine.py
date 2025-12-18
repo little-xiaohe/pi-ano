@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Dict, Optional, List
 import os
-
 import fluidsynth
 
 from src.hardware.config.keys import KeyId

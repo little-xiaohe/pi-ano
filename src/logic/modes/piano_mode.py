@@ -11,6 +11,9 @@ from src.hardware.audio.audio_engine import AudioEngine
 
 WHITE = (255, 255, 255)
 
+# 打開這個可以看到每個 NOTE_ON / NOTE_OFF 事件（含來源來源）
+DEBUG_PIANO_EVENTS = False
+
 
 @dataclass
 class NoteState:
@@ -62,7 +65,6 @@ class PianoMode:
         if self.audio is not None:
             self.audio.note_on(key, v)
 
-
     def note_off(self, key: KeyId) -> None:
         if key not in self.notes:
             return
@@ -74,10 +76,14 @@ class PianoMode:
     def handle_events(self, events: List[InputEvent]) -> None:
         """
         Consume NOTE_ON / NOTE_OFF events from the input layer.
-
-        We now use the shared EventType enum from logic.input_event.
         """
         for ev in events:
+            if DEBUG_PIANO_EVENTS and ev.type in (EventType.NOTE_ON, EventType.NOTE_OFF):
+                print(
+                    f"[Piano] EVENT {ev.type.name} "
+                    f"key={ev.key} vel={ev.velocity} src={ev.source}"
+                )
+
             if ev.type == EventType.NOTE_ON:
                 self.note_on(ev.key, ev.velocity)
             elif ev.type == EventType.NOTE_OFF:
