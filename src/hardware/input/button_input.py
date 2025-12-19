@@ -7,11 +7,7 @@ import digitalio
 
 from src.logic.input_event import InputEvent, EventType
 from src.hardware.config.keys import KeyId
-
-
-
-# Duration (in seconds) a button must be held to count as a "long press" for KEY_4 / KEY_1
-LONG_PRESS_SEC = 1.0
+from src.logic.input_config import LONG_PRESS
 
 
 @dataclass
@@ -49,9 +45,9 @@ class ButtonInput:
             - On press edge (HIGH → LOW): emit NOTE_ON
             - On release edge (LOW → HIGH): emit NOTE_OFF
         - Long press on KEY_4 (D14):
-            - If held for at least LONG_PRESS_SEC: emit EventType.NEXT_MODE (once per press)
+            - If held for at least LONG_PRESS_NEXT_MODE_SEC: emit EventType.NEXT_MODE (once per press)
         - Long press on KEY_1 (D25):
-            - If held for at least LONG_PRESS_SEC: emit EventType.NEXT_SF2 (once per press)
+            - If held for at least LONG_PRESS_NEXT_SF2_SEC: emit EventType.NEXT_SF2 (once per press)
 
     Note:
         The mapping from NOTE_ON / NOTE_OFF to actual behavior is handled at a higher level (InputManager + mode logic).
@@ -99,8 +95,8 @@ class ButtonInput:
         For each button:
           - Edge: HIGH → LOW  (released → pressed): emit NOTE_ON
           - While pressed:
-                If key == KEY_4 and held for ≥ LONG_PRESS_SEC and NEXT_MODE not yet sent: emit NEXT_MODE once
-                If key == KEY_1 and held for ≥ LONG_PRESS_SEC and NEXT_SF2 not yet sent: emit NEXT_SF2 once
+                If key == KEY_4 and held for ≥ LONG_PRESS_NEXT_MODE_SEC and NEXT_MODE not yet sent: emit NEXT_MODE once
+                If key == KEY_1 and held for ≥ LONG_PRESS_NEXT_SF2_SEC and NEXT_SF2 not yet sent: emit NEXT_SF2 once
           - Edge: LOW → HIGH  (pressed → released): emit NOTE_OFF
         """
         events: List[InputEvent] = []
@@ -129,36 +125,38 @@ class ButtonInput:
                     print(f"[BTN] NOTE_ON key={int(ch.key)}")
 
             # ----------------------------------------------------------
-            # While pressed: check long press on KEY_4 / KEY_1
+            # While pressed: check long press (data-driven)
             # ----------------------------------------------------------
             if (not current) and ch.press_time is not None and (not ch.long_sent):
-                # Button is still being held down
                 duration = now - ch.press_time
 
-                # Long press: KEY_4 → NEXT_MODE
-                if ch.key == KeyId.KEY_4 and duration >= LONG_PRESS_SEC:
-                    events.append(
-                        InputEvent(
-                            type=EventType.NEXT_MODE,
-                            source="button",
-                        )
-                    )
-                    ch.long_sent = True
-                    if self.debug:
-                        print("[BTN] LONG PRESS on KEY_4 → NEXT_MODE")
+                # Is this key configured for long-press?
+                threshold = LONG_PRESS.get(ch.key)
+                if threshold is not None and duration >= threshold:
 
-                # Long press: KEY_1 → NEXT_SF2
-                elif ch.key == KeyId.KEY_1 and duration >= LONG_PRESS_SEC:
-                    events.append(
-                        InputEvent(
-                            type=EventType.NEXT_SF2,
-                            source="button",
-                        )
-                    )
-                    ch.long_sent = True
-                    if self.debug:
-                        print("[BTN] LONG PRESS on KEY_1 → NEXT_SF2")
+                    # Map key → action
+                    if ch.key == KeyId.KEY_0:
+                        ev_type = EventType.SHUTDOWN
+                        debug_msg = "SHUTDOWN"
+                    elif ch.key == KeyId.KEY_4:
+                        ev_type = EventType.NEXT_MODE
+                        debug_msg = "NEXT_MODE"
+                    elif ch.key == KeyId.KEY_1:
+                        ev_type = EventType.NEXT_SF2
+                        debug_msg = "NEXT_SF2"
+                    else:
+                        ev_type = None
 
+                    if ev_type is not None:
+                        events.append(
+                            InputEvent(
+                                type=ev_type,
+                                source="button",
+                            )
+                        )
+                        ch.long_sent = True
+                        if self.debug:
+                            print(f"[BTN] LONG PRESS on {ch.key.name} → {debug_msg}")
             # ----------------------------------------------------------
             # Edge: LOW → HIGH = button just released
             # ----------------------------------------------------------

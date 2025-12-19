@@ -11,8 +11,8 @@ class EventType(Enum):
     MODE_SWITCH = auto()   # keyboard: mode piano / mode song ...
     NEXT_SONG = auto()     # keyboard: next (used in song mode)
     NEXT_MODE = auto()     # button: long press D14 → switch to next mode
-    NEXT_SF2 = auto()      # button: long press D25 (KEY_0) → switch SoundFont
-
+    NEXT_SF2 = auto()      # button: long press D25 (KEY_1) → switch SoundFont
+    SHUTDOWN = auto()      # button: long press KEY_0 to quit
 
 @dataclass
 class InputEvent:

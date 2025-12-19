@@ -87,14 +87,14 @@ def main() -> None:
             now = time.monotonic()
             current_mode = input_manager.current_mode_name
 
-            # Collect input events for this frame
             events = poll_all_inputs(input_controller, current_mode)
 
-            # Route events + update active mode
+            if any(e.type == EventType.SHUTDOWN for e in events):
+                raise KeyboardInterrupt()
+
             input_manager.handle_events(events, now)
             input_manager.update(now)
 
-            # Frame pacing
             if current_mode == "song":
                 time.sleep(0.001)
             else:
@@ -194,7 +194,7 @@ def poll_all_inputs(input_controller: InputController, current_mode: str):
             btn_events = [
                 e
                 for e in btn_events
-                if e.type in (EventType.NEXT_MODE, EventType.MODE_SWITCH, EventType.NEXT_SF2)
+                if e.type in (EventType.NEXT_MODE, EventType.MODE_SWITCH, EventType.NEXT_SF2, EventType.SHUTDOWN)
             ]
 
         events.extend(btn_events)
