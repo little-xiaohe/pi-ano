@@ -10,7 +10,7 @@ from src.hardware.config.keys import KeyId
 
 
 
-# Duration (in seconds) a button must be held to count as a "long press" for KEY_4 / KEY_0
+# Duration (in seconds) a button must be held to count as a "long press" for KEY_4 / KEY_1
 LONG_PRESS_SEC = 1.0
 
 
@@ -38,8 +38,8 @@ class ButtonInput:
     Polls physical GPIO buttons and converts them into InputEvent objects.
 
     Wiring (using pull-up inputs, active LOW):
-        KEY_0 → D25  (long-press for "next soundfont")
-        KEY_1 → D24
+        KEY_0 → D25
+        KEY_1 → D24 (long-press for "next soundfont")
         KEY_2 → D18
         KEY_3 → D15
         KEY_4 → D14  (long-press for "next mode")
@@ -50,7 +50,7 @@ class ButtonInput:
             - On release edge (LOW → HIGH): emit NOTE_OFF
         - Long press on KEY_4 (D14):
             - If held for at least LONG_PRESS_SEC: emit EventType.NEXT_MODE (once per press)
-        - Long press on KEY_0 (D25):
+        - Long press on KEY_1 (D25):
             - If held for at least LONG_PRESS_SEC: emit EventType.NEXT_SF2 (once per press)
 
     Note:
@@ -100,7 +100,7 @@ class ButtonInput:
           - Edge: HIGH → LOW  (released → pressed): emit NOTE_ON
           - While pressed:
                 If key == KEY_4 and held for ≥ LONG_PRESS_SEC and NEXT_MODE not yet sent: emit NEXT_MODE once
-                If key == KEY_0 and held for ≥ LONG_PRESS_SEC and NEXT_SF2 not yet sent: emit NEXT_SF2 once
+                If key == KEY_1 and held for ≥ LONG_PRESS_SEC and NEXT_SF2 not yet sent: emit NEXT_SF2 once
           - Edge: LOW → HIGH  (pressed → released): emit NOTE_OFF
         """
         events: List[InputEvent] = []
@@ -129,7 +129,7 @@ class ButtonInput:
                     print(f"[BTN] NOTE_ON key={int(ch.key)}")
 
             # ----------------------------------------------------------
-            # While pressed: check long press on KEY_4 / KEY_0
+            # While pressed: check long press on KEY_4 / KEY_1
             # ----------------------------------------------------------
             if (not current) and ch.press_time is not None and (not ch.long_sent):
                 # Button is still being held down
@@ -147,8 +147,8 @@ class ButtonInput:
                     if self.debug:
                         print("[BTN] LONG PRESS on KEY_4 → NEXT_MODE")
 
-                # Long press: KEY_0 → NEXT_SF2
-                elif ch.key == KeyId.KEY_0 and duration >= LONG_PRESS_SEC:
+                # Long press: KEY_1 → NEXT_SF2
+                elif ch.key == KeyId.KEY_1 and duration >= LONG_PRESS_SEC:
                     events.append(
                         InputEvent(
                             type=EventType.NEXT_SF2,
@@ -157,7 +157,7 @@ class ButtonInput:
                     )
                     ch.long_sent = True
                     if self.debug:
-                        print("[BTN] LONG PRESS on KEY_0 → NEXT_SF2")
+                        print("[BTN] LONG PRESS on KEY_1 → NEXT_SF2")
 
             # ----------------------------------------------------------
             # Edge: LOW → HIGH = button just released
