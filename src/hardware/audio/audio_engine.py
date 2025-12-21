@@ -14,7 +14,7 @@ from src.hardware.config.keys import KeyId
 # --------------------------------------------------------------------------------------
 SOUNDFONT_VOLUME: Dict[str, int] = {
     "00_piano.sf2": 110,   # Piano is louder, so lower the volume a bit
-    "01_guitar.sf2": 127,  # Guitar is quieter, so set to max
+    # "01_guitar.sf2": 127,  # Guitar is quieter, so set to max
 }
 
 
@@ -44,7 +44,9 @@ class AudioEngine:
 
         # Create synth and start audio driver
         self.fs = fluidsynth.Synth(gain=self.default_gain, samplerate=sample_rate)
-        self.fs.start(driver="alsa")
+        # self.fs.start(driver="alsa")
+        self.fs.start(driver="alsa", device="hw:CARD=Device,DEV=0")
+
 
         # Channel assignments
         self.piano_channel: int = 0

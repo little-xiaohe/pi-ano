@@ -62,7 +62,7 @@ class ButtonInput:
         key_pin_pairs = [
             (KeyId.KEY_0, board.D25),
             (KeyId.KEY_1, board.D24),
-            (KeyId.KEY_2, board.D18),
+            (KeyId.KEY_2, board.D23),
             (KeyId.KEY_3, board.D15),
             (KeyId.KEY_4, board.D14),
         ]

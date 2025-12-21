@@ -111,12 +111,13 @@ class InputManager:
         elif mode_name == "rhythm":
             self._rhythm_postgame_started = False
             self._rhythm_postgame_stage = None
+            # Pico 端會在 MODE:rhythm 時自行做：RYTHM.bmp(3s) → attract loop
             self.rhythm.reset(now)
 
         elif mode_name == "song":
             self.song.reset(now)
 
-        # Notify Pico to switch mode
+        # Notify Pico to switch mode (MODE:<name>)
         if self.pico_display is not None:
             try:
                 self.pico_display.show_mode(mode_name)
@@ -144,12 +145,10 @@ class InputManager:
                 except Exception as e:
                     print("[InputManager] rhythm.start_play_after_countdown error:", e)
 
-                if self.pico_display is not None:
-                    try:
-                        difficulty = getattr(self.rhythm, "difficulty", "easy")
-                        self.pico_display.send_rhythm_level(difficulty)
-                    except Exception as e:
-                        print("[InputManager] pico_display.send_rhythm_level error:", e)
+                # IMPORTANT:
+                # Do NOT send RHYTHM:LEVEL here.
+                # In the new Pico code.py, RHYTHM:LEVEL triggers countdown.
+                # Sending it again would restart countdown or mess up state.
 
     # ------------------------------------------------------------------
     # Event handling
@@ -251,11 +250,15 @@ class InputManager:
 
                 print(f"[InputManager] Rhythm difficulty selected: {difficulty}")
 
+                # NEW FLOW:
+                # Send RHYTHM:LEVEL:<diff> to Pico.
+                # Pico will immediately start countdown and later print RHYTHM:COUNTDOWN_DONE.
+                # Do NOT send RHYTHM:COUNTDOWN anymore.
                 if self.pico_display is not None:
                     try:
-                        self.pico_display.send_rhythm_countdown()
+                        self.pico_display.send_rhythm_level(difficulty)
                     except Exception as e:
-                        print("[InputManager] pico_display.send_rhythm_countdown error:", e)
+                        print("[InputManager] pico_display.send_rhythm_level error:", e)
 
                 return
 
@@ -346,7 +349,7 @@ class InputManager:
         stage = self._rhythm_postgame_stage
         elapsed = now - self._rhythm_postgame_t0
 
-        # 1) FAIL / NEW RECORD! marquee: give more time
+        # 1) FAIL / NEW RECORD! marquee
         if stage == "result_scroll":
             if elapsed >= 4.0:
                 try:
@@ -372,7 +375,7 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_score"
                 self._rhythm_postgame_t0 = now
 
-        # 3) Show 0/84 static
+        # 3) Show user score static
         elif stage == "user_score":
             if elapsed >= 3.0:
                 try:
@@ -419,6 +422,7 @@ class InputManager:
     # ------------------------------------------------------------------
 
     def update(self, now: float) -> None:
+        # 1) Poll Pico messages every frame
         if self.pico_display is not None:
             try:
                 messages = self.pico_display.poll_messages()
@@ -429,6 +433,7 @@ class InputManager:
             for msg in messages:
                 self._handle_pico_message(msg, now)
 
+        # 2) Normal mode updates
         if self.current_mode == "menu":
             if hasattr(self.menu, "update"):
                 self.menu.update(now)
@@ -440,7 +445,7 @@ class InputManager:
         elif self.current_mode == "rhythm":
             if hasattr(self.rhythm, "update"):
                 self.rhythm.update(now)
-            # ★ Rhythm game post-game visual effects
+            # Rhythm post-game sequence
             self._maybe_run_rhythm_postgame_timeline(now)
 
         elif self.current_mode == "song":

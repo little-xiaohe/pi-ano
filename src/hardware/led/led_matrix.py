@@ -46,7 +46,7 @@ class LedMatrix:
 
     def __init__(
         self,
-        pin=board.D23,
+        pin=board.D18,
         num_pixels: int = NUM_PIXELS,
         brightness: float = BRIGHTNESS,
         auto_write: bool = AUTO_WRITE,

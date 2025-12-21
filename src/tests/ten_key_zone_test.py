@@ -29,7 +29,9 @@ MATRIX_WIDTH = 32
 MATRIX_HEIGHT = 16
 NUM_PIXELS = MATRIX_WIDTH * MATRIX_HEIGHT
 
-PIN = board.D23 # change if your data pin is different
+# PIN = board.D23 # change if your data pin is different
+PIN = board.D18 # change if your data pin is different
+
 BRIGHTNESS = 0.03
 AUTO_WRITE = False
 
