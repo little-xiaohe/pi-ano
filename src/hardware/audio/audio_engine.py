@@ -45,8 +45,10 @@ class AudioEngine:
         # Create synth and start audio driver
         self.fs = fluidsynth.Synth(gain=self.default_gain, samplerate=sample_rate)
         # self.fs.start(driver="alsa")
-        self.fs.start(driver="alsa", device="hw:CARD=Device,DEV=0")
-
+        self.fs.start(
+            driver="alsa",
+            device="plughw:CARD=Device,DEV=0"
+        )
 
         # Channel assignments
         self.piano_channel: int = 0

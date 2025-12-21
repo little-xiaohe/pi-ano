@@ -1,3 +1,4 @@
+# pico_mode_display.py
 from __future__ import annotations
 
 import time
@@ -31,8 +32,12 @@ class PicoModeDisplay:
       RHYTHM:USER_SCORE_LABEL     # scroll "YOUR SCORE"
       RHYTHM:USER_SCORE:x/y       # show this run score
       RHYTHM:BEST_SCORE_LABEL     # scroll "BEST SCORE"
-      RHYTHM:BEST_SCORE:x/y       # show best score
+      RHYTHM:BEST_SCORE:x/y       # show best score (Pico will later print RHYTHM:BEST_SCORE_DONE)
       RHYTHM:BACK_TO_TITLE        # back to rhythm title → select
+
+    Pico → Pi messages (printed by Pico):
+      RHYTHM:COUNTDOWN_DONE
+      RHYTHM:BEST_SCORE_DONE      # emitted after BEST_SCORE has finished holding
 
     Shutdown / utility:
       LED:CLEAR                   # clear/turn off the Pico-controlled LED panel
@@ -164,6 +169,33 @@ class PicoModeDisplay:
             print("[PicoModeDisplay] read error:", e)
 
         return msgs
+
+    def wait_for_message(self, target: str, timeout_s: float = 8.0, poll_interval_s: float = 0.02) -> bool:
+        """
+        Block until a specific Pico message is received (or timeout).
+
+        Returns:
+            True if target was seen, False on timeout or if serial is disabled.
+        """
+        if not self.enabled or self.ser is None:
+            return False
+
+        deadline = time.time() + float(timeout_s)
+        while time.time() < deadline:
+            for msg in self.poll_messages():
+                if msg.strip() == target:
+                    return True
+            time.sleep(poll_interval_s)
+        return False
+
+    def wait_for_best_score_done(self, timeout_s: float = 8.0) -> bool:
+        """
+        Wait until Pico confirms the BEST_SCORE number has finished holding.
+
+        Pico-side code.py prints:
+          RHYTHM:BEST_SCORE_DONE
+        """
+        return self.wait_for_message("RHYTHM:BEST_SCORE_DONE", timeout_s=timeout_s)
 
     def send_rhythm_level(self, difficulty: str) -> None:
         """Tell Pico the selected difficulty so it can show EASY/MEDIUM/HARD."""

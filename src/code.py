@@ -17,13 +17,13 @@
 #           1) Pico prints "RHYTHM:COUNTDOWN_DONE"
 #           2) Pico shows EASY/MEDIUM/HARD.bmp and holds it.
 #
-#   # Post-game flow (Pi controls timing):
+# Post-game flow (Pi controls timing):
 #   RHYTHM:CHALLENGE_FAIL     # marquee "CHALLENGE FAIL"
 #   RHYTHM:CHALLENGE_SUCCESS  # marquee "NEW RECORD!"
 #   RHYTHM:USER_SCORE_LABEL   # marquee "YOUR SCORE"
-#   RHYTHM:USER_SCORE:x/y     # static score
+#   RHYTHM:USER_SCORE:x/y     # static score (hold)
 #   RHYTHM:BEST_SCORE_LABEL   # marquee "BEST SCORE"
-#   RHYTHM:BEST_SCORE:x/y     # static best
+#   RHYTHM:BEST_SCORE:x/y     # static best (hold)  -> Pico will print RHYTHM:BEST_SCORE_DONE after hold ends
 #   RHYTHM:BACK_TO_TITLE      # show RYTHM.bmp for 3s, then attract loop until LEVEL arrives
 #
 #   LED:CLEAR                 # immediately force the panel to black
@@ -42,12 +42,12 @@ from adafruit_bitmap_font import bitmap_font
 from adafruit_display_text.label import Label
 
 # ---------------------------------------------------------------------------
-# Disable auto reload
+# Disable auto reload (CircuitPython hot-reload)
 # ---------------------------------------------------------------------------
 supervisor.runtime.autoreload = False
 
 # ---------------------------------------------------------------------------
-# Display setup
+# Display setup (HUB75 32x16)
 # ---------------------------------------------------------------------------
 displayio.release_displays()
 
@@ -98,10 +98,10 @@ except Exception as e:
     print("Error loading helvB12.bdf:", e)
     font_large = None
 
-WHITE = 0xFFFFFF
-RED = 0xFF3030
+WHITE  = 0xFFFFFF
+RED    = 0xFF3030
 MATCHA = 0x7ACF5A
-GREEN = 0x80FF80
+GREEN  = 0x80FF80
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -109,11 +109,11 @@ GREEN = 0x80FF80
 STATE = "IDLE"
 STATE_ENTER_TIME = time.monotonic()
 
-# Countdown behavior (non-blocking)
+# Countdown (non-blocking)
 COUNTDOWN_TOTAL_SEC = 5.0
 COUNTDOWN_DONE_SENT = False
 
-# Rhythm
+# Rhythm selection
 CURRENT_RHYTHM_LEVEL = None  # "easy" | "medium" | "hard" | None
 
 RHYTHM_TITLE_HOLD_SEC = 3.0
@@ -124,7 +124,7 @@ RHYTHM_ATTRACT_PATHS = [
     "/graphics/MEDIUM.bmp",
     "/graphics/HARD.bmp",
 ]
-RHYTHM_ATTRACT_FRAME_SEC = 1.0  # make SELECT visible
+RHYTHM_ATTRACT_FRAME_SEC = 1.0
 _rhythm_attract_index = 0
 _rhythm_attract_last_switch = 0.0
 
@@ -135,48 +135,65 @@ LEVEL_TO_BMP = {
 }
 
 # ---------------------------------------------------------------------------
-# Marquee (scrolling text) state + "minimum hold" lock
+# Marquee (scrolling text) + timed lock + FIFO buffering
 # ---------------------------------------------------------------------------
 _SCROLL_LABEL = None
 _SCROLL_X = 0.0
 _SCROLL_LAST_T = 0.0
 
-SCROLL_SPEED_PX = 18   # pixels/sec
-SCROLL_GAP_PX = 12     # spacing between repeats
+SCROLL_SPEED_PX = 16.0   # pixels/sec
+SCROLL_GAP_PX = 12       # spacing between repeats
 
-# ✅ Minimum time a marquee must stay on screen (even if Pi sends next commands)
-MARQUEE_MIN_HOLD_SEC = 2.8   # 你想更久就加大，例如 3.5
-MARQUEE_LOCK_UNTIL = 0.0
+MARQUEE_TOTAL_SEC = 6.0      # show marquee for at least this many seconds
+MARQUEE_LOCK_UNTIL = 0.0     # while locked, non-urgent commands are queued
 
+# ---------------------------------------------------------------------------
+# Static score hold lock + BEST_SCORE_DONE ACK
+#   ✅ Split per-score hold time so ONLY BEST is 2 seconds
+# ---------------------------------------------------------------------------
+USER_SCORE_HOLD_SEC = 5.0
+BEST_SCORE_HOLD_SEC = 2.0
+RESULT_HOLD_SEC     = 3.0
 
+SCORE_LOCK_UNTIL = 0.0
+
+# Track which score we are showing so we can ACK only after BEST score finishes holding
+LAST_SCORE_KIND = None        # None | "RESULT" | "USER" | "BEST"
+BEST_SCORE_DONE_SENT = False  # True once we printed RHYTHM:BEST_SCORE_DONE for the latest BEST score
+
+# ---------------------------------------------------------------------------
+# FIFO queue for buffered commands (fixes "marquee disappears")
+# ---------------------------------------------------------------------------
+PENDING_QUEUE = []
+PENDING_MAX = 32  # prevent unbounded growth if Pi spams
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
 def set_state(new_state: str):
     """Transition to a new UI state."""
     global STATE, STATE_ENTER_TIME, COUNTDOWN_DONE_SENT
-    # Avoid spam resetting for most states, BUT scrolling should always restart.
     if STATE == new_state and new_state != "RHYTHM_SCROLL":
         return
-
     STATE = new_state
     STATE_ENTER_TIME = time.monotonic()
     print("STATE ->", STATE)
-
     if new_state == "RHYTHM_COUNTDOWN":
         COUNTDOWN_DONE_SENT = False
-
 
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
 def clear_group():
+    """Remove all elements from the root display group."""
     while len(main_group):
         main_group.pop()
     gc.collect()
 
-
 _black_tg = None
 
-
 def show_black_screen():
+    """Force the panel to full black."""
     global _black_tg
     clear_group()
     if _black_tg is None:
@@ -186,8 +203,8 @@ def show_black_screen():
         _black_tg = displayio.TileGrid(bmp, pixel_shader=pal)
     main_group.append(_black_tg)
 
-
-def show_fullscreen_bmp(path):
+def show_fullscreen_bmp(path: str):
+    """Show a centered fullscreen BMP image."""
     clear_group()
     try:
         bmp = displayio.OnDiskBitmap(path)
@@ -201,48 +218,41 @@ def show_fullscreen_bmp(path):
     except Exception as e:
         print("BMP error:", path, e)
 
-
 def _make_center_label(text: str, font, color: int):
-    lbl = Label(
-        font,
-        text=text,
-        color=color,
-        anchor_point=(0.5, 0.5),
-    )
+    """Create a centered Label."""
+    lbl = Label(font, text=text, color=color, anchor_point=(0.5, 0.5))
     lbl.anchored_position = (WIDTH // 2, HEIGHT // 2)
     return lbl
 
-
-def show_center_text(text, font, color):
+def show_center_text(text: str, font, color: int):
+    """Show centered text."""
     clear_group()
     if font is None:
         return
     main_group.append(_make_center_label(text, font, color))
 
-
 def show_score_text(text: str, color=WHITE):
+    """Show centered score text (static)."""
     font = font_small or font_large
     show_center_text(text, font, color)
 
-
 def show_rhythm_level_hold():
+    """Show selected difficulty BMP and hold it."""
     if CURRENT_RHYTHM_LEVEL in LEVEL_TO_BMP:
         show_fullscreen_bmp(LEVEL_TO_BMP[CURRENT_RHYTHM_LEVEL])
     else:
         show_fullscreen_bmp("/graphics/RYTHM.bmp")
 
-
 def start_marquee(text: str, color: int, font=None):
     """
-    Start a left-scrolling marquee text (non-blocking).
-    Anchor-based vertical centering.
+    Start a left-scrolling marquee (non-blocking).
+    Uses anchor-based vertical centering.
     """
     global _SCROLL_LABEL, _SCROLL_X, _SCROLL_LAST_T
     global MARQUEE_LOCK_UNTIL
 
     clear_group()
 
-    # Force small font for marquee on 32x16
     if font is None:
         font = font_small or font_large
     if font is None:
@@ -251,9 +261,9 @@ def start_marquee(text: str, color: int, font=None):
     padded = f"   {text}   "
     lbl = Label(font, text=padded, color=color)
 
-    # Vertical center using anchor (Label baseline is weird otherwise)
-    lbl.anchor_point = (0.0, 0.5)                 # left + vertical center
-    lbl.anchored_position = (WIDTH, HEIGHT // 2)  # start at right edge
+    # Anchor-based vertical centering
+    lbl.anchor_point = (0.0, 0.5)
+    lbl.anchored_position = (WIDTH, HEIGHT // 2)
 
     _SCROLL_LABEL = lbl
     _SCROLL_X = float(WIDTH)
@@ -261,15 +271,14 @@ def start_marquee(text: str, color: int, font=None):
 
     main_group.append(lbl)
 
-    # Always restart scrolling state
+    # Enter marquee state
     global STATE, STATE_ENTER_TIME
     STATE = "RHYTHM_SCROLL"
     STATE_ENTER_TIME = time.monotonic()
     print("STATE ->", STATE)
 
-    # ✅ lock: ensure marquee stays at least MARQUEE_MIN_HOLD_SEC
-    MARQUEE_LOCK_UNTIL = time.monotonic() + MARQUEE_MIN_HOLD_SEC
-
+    # Lock the screen for a fixed duration
+    MARQUEE_LOCK_UNTIL = time.monotonic() + MARQUEE_TOTAL_SEC
 
 # ---------------------------------------------------------------------------
 # Menu animation
@@ -285,27 +294,27 @@ MENU_FRAME_DURATION = 0.6
 _menu_index = 0
 _menu_last_switch = 0.0
 
-
 def enter_menu_mode(now: float):
+    """Enter MENU mode and show the first frame."""
     global _menu_index, _menu_last_switch
     set_state("MENU")
     _menu_index = 0
     _menu_last_switch = now
     show_fullscreen_bmp(MENU_BMP_PATHS[_menu_index])
 
-
 def update_menu_mode(now: float):
+    """Update menu BMP slideshow."""
     global _menu_index, _menu_last_switch
     if now - _menu_last_switch >= MENU_FRAME_DURATION:
         _menu_last_switch = now
         _menu_index = (_menu_index + 1) % len(MENU_BMP_PATHS)
         show_fullscreen_bmp(MENU_BMP_PATHS[_menu_index])
 
-
 # ---------------------------------------------------------------------------
 # Rhythm UI: title → attract loop
 # ---------------------------------------------------------------------------
 def enter_rhythm_title():
+    """Show RYTHM.bmp for a while, then auto-enter attract loop."""
     global _rhythm_attract_index, _rhythm_attract_last_switch, CURRENT_RHYTHM_LEVEL
     CURRENT_RHYTHM_LEVEL = None
     _rhythm_attract_index = 0
@@ -313,27 +322,27 @@ def enter_rhythm_title():
     set_state("RHYTHM_TITLE")
     show_fullscreen_bmp("/graphics/RYTHM.bmp")
 
-
 def enter_rhythm_attract(now: float):
+    """Enter rhythm attract loop."""
     global _rhythm_attract_index, _rhythm_attract_last_switch
     _rhythm_attract_index = 0
-    _rhythm_attract_last_switch = now  # keep SELECT visible for full frame interval
+    _rhythm_attract_last_switch = now
     set_state("RHYTHM_ATTRACT")
     show_fullscreen_bmp(RHYTHM_ATTRACT_PATHS[_rhythm_attract_index])
 
-
 def update_rhythm_attract(now: float):
+    """Update rhythm attract loop frames."""
     global _rhythm_attract_index, _rhythm_attract_last_switch
     if now - _rhythm_attract_last_switch >= RHYTHM_ATTRACT_FRAME_SEC:
         _rhythm_attract_last_switch = now
         _rhythm_attract_index = (_rhythm_attract_index + 1) % len(RHYTHM_ATTRACT_PATHS)
         show_fullscreen_bmp(RHYTHM_ATTRACT_PATHS[_rhythm_attract_index])
 
-
 # ---------------------------------------------------------------------------
 # Serial I/O
 # ---------------------------------------------------------------------------
 def read_serial_line():
+    """Read one line from USB serial (non-blocking)."""
     if supervisor.runtime.serial_bytes_available == 0:
         return None
     try:
@@ -348,30 +357,11 @@ def read_serial_line():
         print("Serial read error:", e)
         return None
 
-
 # ---------------------------------------------------------------------------
-# Command processing
+# Command parsing helpers
 # ---------------------------------------------------------------------------
-def handle_mode_command(mode_name: str):
-    name = mode_name.strip().lower()
-    now = time.monotonic()
-
-    if name == "menu":
-        enter_menu_mode(now)
-    elif name == "piano":
-        set_state("PIANO")
-        show_fullscreen_bmp("/graphics/AIR.bmp")
-    elif name == "rhythm":
-        enter_rhythm_title()
-    elif name == "song":
-        set_state("SONG")
-        show_fullscreen_bmp("/graphics/SONG.bmp")
-    else:
-        set_state("UNKNOWN")
-        show_center_text(name[:4].upper(), font_small, WHITE)
-
-
 def _set_level_from_line(line: str):
+    """Parse RHYTHM:LEVEL:* and update CURRENT_RHYTHM_LEVEL."""
     global CURRENT_RHYTHM_LEVEL
     try:
         lvl = line.split(":", 2)[2].strip().lower()
@@ -382,11 +372,10 @@ def _set_level_from_line(line: str):
     else:
         CURRENT_RHYTHM_LEVEL = None
 
-
-def _cmd_is_allowed_during_marquee(cmd_upper: str) -> bool:
+def _cmd_is_urgent(cmd_upper: str) -> bool:
     """
-    During the marquee lock window, allow only "urgent" commands that should
-    immediately override the screen.
+    Commands that must be allowed to override screen immediately.
+    These can break marquee/score locks.
     """
     if cmd_upper == "LED:CLEAR":
         return True
@@ -396,31 +385,21 @@ def _cmd_is_allowed_during_marquee(cmd_upper: str) -> bool:
         return True
     if cmd_upper.startswith("RHYTHM:COUNTDOWN"):
         return True
-    # Everything else (USER_SCORE_LABEL/BEST_SCORE_LABEL/RESULT/etc.) will wait.
     return False
 
+def _enqueue(line: str):
+    """Push a line into FIFO queue, with a max cap."""
+    global PENDING_QUEUE
+    if len(PENDING_QUEUE) >= PENDING_MAX:
+        # Drop oldest to keep newest commands
+        PENDING_QUEUE = PENDING_QUEUE[-(PENDING_MAX - 1):]
+    PENDING_QUEUE.append(line)
 
-def process_serial_command():
-    global MARQUEE_LOCK_UNTIL
-
-    line = read_serial_line()
-    if not line:
-        return
-
-    # ---- strong sanitize: keep only visible ASCII ----
-    line = line.replace("\x00", "")
-    line = line.replace("\r", "")
-    line = "".join(ch for ch in line if 32 <= ord(ch) <= 126).strip()
-    if not line:
-        return
+def _handle_line(line: str):
+    """Handle one sanitized command line."""
+    global SCORE_LOCK_UNTIL, LAST_SCORE_KIND, BEST_SCORE_DONE_SENT
 
     up = line.upper()
-    now = time.monotonic()
-
-    # If marquee is running, and not yet past min hold time, ignore non-urgent commands
-    if STATE == "RHYTHM_SCROLL" and now < MARQUEE_LOCK_UNTIL:
-        if not _cmd_is_allowed_during_marquee(up):
-            return
 
     # LED:CLEAR — highest priority
     if up == "LED:CLEAR":
@@ -430,7 +409,21 @@ def process_serial_command():
 
     # MODE:<name>
     if up.startswith("MODE:"):
-        handle_mode_command(line.split(":", 1)[1])
+        name = line.split(":", 1)[1].strip().lower()
+        now = time.monotonic()
+        if name == "menu":
+            enter_menu_mode(now)
+        elif name == "piano":
+            set_state("PIANO")
+            show_fullscreen_bmp("/graphics/AIR.bmp")
+        elif name == "rhythm":
+            enter_rhythm_title()
+        elif name == "song":
+            set_state("SONG")
+            show_fullscreen_bmp("/graphics/SONG.bmp")
+        else:
+            set_state("UNKNOWN")
+            show_center_text(name[:4].upper(), font_small, WHITE)
         return
 
     # RHYTHM:BACK_TO_TITLE
@@ -438,7 +431,7 @@ def process_serial_command():
         enter_rhythm_title()
         return
 
-    # RHYTHM:LEVEL:<easy|medium|hard>  (NEW: start countdown immediately)
+    # RHYTHM:LEVEL:* starts countdown immediately
     if up.startswith("RHYTHM:LEVEL:"):
         _set_level_from_line(line)
         set_state("RHYTHM_COUNTDOWN")
@@ -451,17 +444,20 @@ def process_serial_command():
         clear_group()
         return
 
-    # RHYTHM:INGAME (hold difficulty bmp)
+    # RHYTHM:INGAME
     if up.startswith("RHYTHM:INGAME"):
         set_state("RHYTHM_INGAME")
         show_rhythm_level_hold()
         return
 
-    # RHYTHM:RESULT:x/y
+    # RHYTHM:RESULT:x/y (static)
     if up.startswith("RHYTHM:RESULT:"):
         set_state("RHYTHM_POST")
         text = line.split(":", 2)[2].strip()
         show_score_text(text, WHITE)
+        SCORE_LOCK_UNTIL = time.monotonic() + RESULT_HOLD_SEC
+        LAST_SCORE_KIND = "RESULT"
+        BEST_SCORE_DONE_SENT = False
         return
 
     # Post-game flow (marquee)
@@ -477,32 +473,100 @@ def process_serial_command():
         start_marquee("YOUR SCORE", WHITE)
         return
 
+    # Static user score (hold)
     if up.startswith("RHYTHM:USER_SCORE:"):
         set_state("RHYTHM_POST")
         text = line.split(":", 2)[2].strip()
         show_score_text(text, WHITE)
+        SCORE_LOCK_UNTIL = time.monotonic() + USER_SCORE_HOLD_SEC
+        LAST_SCORE_KIND = "USER"
+        BEST_SCORE_DONE_SENT = False
         return
 
     if up == "RHYTHM:BEST_SCORE_LABEL":
         start_marquee("BEST SCORE", GREEN)
         return
 
+    # Static best score (hold) -> later emit RHYTHM:BEST_SCORE_DONE
     if up.startswith("RHYTHM:BEST_SCORE:"):
         set_state("RHYTHM_POST")
         text = line.split(":", 2)[2].strip()
         show_score_text(text, GREEN)
+        SCORE_LOCK_UNTIL = time.monotonic() + BEST_SCORE_HOLD_SEC
+        LAST_SCORE_KIND = "BEST"
+        BEST_SCORE_DONE_SENT = False
         return
 
     # Unknown command
     set_state("UNKNOWN_CMD")
     show_center_text(up[:4], font_small or font_large, WHITE)
 
+# ---------------------------------------------------------------------------
+# Command processing (with lock + FIFO queue)
+# ---------------------------------------------------------------------------
+def process_serial_command():
+    """
+    Read exactly one line and either handle it now, or enqueue it if we are in a lock window.
+    """
+    line = read_serial_line()
+    if not line:
+        return
+
+    # Strong sanitize: keep only visible ASCII
+    line = line.replace("\x00", "")
+    line = line.replace("\r", "")
+    line = "".join(ch for ch in line if 32 <= ord(ch) <= 126).strip()
+    if not line:
+        return
+
+    up = line.upper()
+    now = time.monotonic()
+
+    # If marquee is locked, enqueue non-urgent commands instead of dropping them
+    if STATE == "RHYTHM_SCROLL" and now < MARQUEE_LOCK_UNTIL:
+        if not _cmd_is_urgent(up):
+            _enqueue(line)
+            return
+
+    # If static score is locked, enqueue non-urgent commands as well
+    if STATE == "RHYTHM_POST" and now < SCORE_LOCK_UNTIL:
+        if not _cmd_is_urgent(up):
+            _enqueue(line)
+            return
+
+    # Otherwise handle immediately
+    _handle_line(line)
 
 # ---------------------------------------------------------------------------
 # State update
 # ---------------------------------------------------------------------------
 def update_state(now: float):
-    global COUNTDOWN_DONE_SENT, _SCROLL_X, _SCROLL_LAST_T
+    """
+    Update animations and timed transitions.
+    Also replays buffered commands once lock windows are over.
+    """
+    global COUNTDOWN_DONE_SENT
+    global _SCROLL_X, _SCROLL_LAST_T
+    global PENDING_QUEUE
+    global LAST_SCORE_KIND, BEST_SCORE_DONE_SENT
+
+    # Emit an ACK when BEST score has finished its minimum hold time.
+    if (
+        STATE == "RHYTHM_POST"
+        and LAST_SCORE_KIND == "BEST"
+        and (not BEST_SCORE_DONE_SENT)
+        and now >= SCORE_LOCK_UNTIL
+    ):
+        print("RHYTHM:BEST_SCORE_DONE")
+        BEST_SCORE_DONE_SENT = True
+
+    # If locks are over, replay queued commands (one per loop to keep UI smooth)
+    marquee_locked = (STATE == "RHYTHM_SCROLL" and now < MARQUEE_LOCK_UNTIL)
+    score_locked   = (STATE == "RHYTHM_POST" and now < SCORE_LOCK_UNTIL)
+    if (not marquee_locked) and (not score_locked) and PENDING_QUEUE:
+        line = PENDING_QUEUE.pop(0)
+        _handle_line(line)
+        # Continue current state's animation too (do not return)
 
     if STATE == "LED_OFF":
         return
@@ -530,6 +594,7 @@ def update_state(now: float):
         _SCROLL_X -= SCROLL_SPEED_PX * dt
         _SCROLL_LABEL.anchored_position = (int(_SCROLL_X), HEIGHT // 2)
 
+        # Loop the marquee continuously
         if _SCROLL_X < -_SCROLL_LABEL.width - SCROLL_GAP_PX:
             _SCROLL_X = float(WIDTH)
             _SCROLL_LABEL.anchored_position = (int(_SCROLL_X), HEIGHT // 2)
@@ -552,12 +617,7 @@ def update_state(now: float):
                 show_rhythm_level_hold()
         return
 
-    if STATE == "RHYTHM_HOLD_LEVEL":
-        return
-
-    if STATE == "RHYTHM_INGAME":
-        return
-
+    # RHYTHM_HOLD_LEVEL, RHYTHM_INGAME, RHYTHM_POST: static unless new commands arrive.
 
 # ---------------------------------------------------------------------------
 # Main loop

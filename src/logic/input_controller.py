@@ -27,7 +27,7 @@ class InputController:
         self.keyboard: Optional[KeyboardInput] = KeyboardInput() if use_keyboard else None
         self.buttons: Optional[ButtonInput] = ButtonInput(debug=False) if use_buttons else None
         self.ir: Optional[IRInput] = IRInput(debug=False) if use_ir else None
-
+        # self.ir = None
     def poll(self) -> List[InputEvent]:
         """
         Poll all enabled input devices and aggregate their events into a single list.

@@ -1,3 +1,5 @@
+# src/logic/input_manager.py
+
 from __future__ import annotations
 
 from typing import List, Optional
@@ -5,21 +7,10 @@ from typing import List, Optional
 from src.logic.input_event import InputEvent, EventType
 from src.hardware.config.keys import KeyId
 from src.hardware.pico.pico_mode_display import PicoModeDisplay
-from src.logic.high_scores import HighScoreStore  # 儲存 rhythm 各難度最高分
+from src.logic.high_scores import HighScoreStore
 
 
 class InputManager:
-    """
-    Central router for all input events (keyboard, buttons, IR) and
-    for high-level mode transitions.
-
-    Modes:
-        - "menu"   → MenuMode
-        - "piano"  → PianoMode
-        - "rhythm" → RhythmMode
-        - "song"   → MidiSongMode
-    """
-
     def __init__(
         self,
         menu,
@@ -42,38 +33,51 @@ class InputManager:
         self._high_scores = HighScoreStore()
         self._rhythm_postgame_started: bool = False
         self._rhythm_postgame_stage: Optional[str] = None
-        # stages: "result_scroll" → "user_label" → "user_score" → "best_label" → "best_score"
+        # stages:
+        #   "result_scroll" → "user_label" → "user_score" → "best_label"
+        #   → "best_score_wait_done" → "pi_mode_colors_hold"
         self._rhythm_postgame_t0: float = 0.0
         self._rhythm_last_score: int = 0
         self._rhythm_last_best: int = 0
         self._rhythm_last_max_score: int = 0
         self._rhythm_last_difficulty: str = "easy"
 
-    # ------------------------------------------------------------------
-    # Public properties
-    # ------------------------------------------------------------------
+        # Pico → Pi handshake:
+        self._pico_best_score_done: bool = False
+
+        # How long to show Pi-controlled difficulty colors after best score is done
+        self._pi_mode_colors_hold_sec: float = 2
 
     @property
     def current_mode_name(self) -> str:
         return self.current_mode
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _get_audio_engine(self):
-        """
-        Try to get the shared AudioEngine from one of piano / rhythm / song.
-        """
         for mode in (self.piano, self.rhythm, self.song):
             audio = getattr(mode, "audio", None)
             if audio is not None:
                 return audio
         return None
 
-    # ------------------------------------------------------------------
-    # Mode switching helpers
-    # ------------------------------------------------------------------
+    def _rhythm_is_in_postgame(self) -> bool:
+        return bool(self._rhythm_postgame_started and self._rhythm_postgame_stage is not None)
+
+    def _render_pi_difficulty_colors(self) -> None:
+        # Preferred: future public method
+        if hasattr(self.rhythm, "show_mode_colors"):
+            try:
+                self.rhythm.show_mode_colors()
+                return
+            except Exception as e:
+                print("[InputManager] rhythm.show_mode_colors error:", e)
+
+        # Fallback: reuse existing renderer
+        if hasattr(self.rhythm, "_render_wait_countdown"):
+            try:
+                self.rhythm._render_wait_countdown()
+                return
+            except Exception as e:
+                print("[InputManager] rhythm._render_wait_countdown error:", e)
 
     def _cycle_mode(self, now: float) -> None:
         if self.current_mode not in self._mode_order:
@@ -87,17 +91,16 @@ class InputManager:
         if mode_name == self.current_mode:
             return
 
-        # Exit old mode
         if self.current_mode == "rhythm":
             if hasattr(self.rhythm, "on_exit"):
                 self.rhythm.on_exit()
             self._rhythm_postgame_started = False
             self._rhythm_postgame_stage = None
+            self._pico_best_score_done = False
 
         self.current_mode = mode_name
         print(f"[MODE] Switched to: {self.current_mode.upper()}")
 
-        # Enter new mode
         if mode_name == "menu":
             if hasattr(self.menu, "reset"):
                 self.menu.reset(now)
@@ -111,22 +114,17 @@ class InputManager:
         elif mode_name == "rhythm":
             self._rhythm_postgame_started = False
             self._rhythm_postgame_stage = None
-            # Pico 端會在 MODE:rhythm 時自行做：RYTHM.bmp(3s) → attract loop
+            self._pico_best_score_done = False
             self.rhythm.reset(now)
 
         elif mode_name == "song":
             self.song.reset(now)
 
-        # Notify Pico to switch mode (MODE:<name>)
         if self.pico_display is not None:
             try:
                 self.pico_display.show_mode(mode_name)
             except Exception as e:
                 print("[InputManager] pico_display.show_mode error:", e)
-
-    # ------------------------------------------------------------------
-    # Pico messages (Pico → Pi)
-    # ------------------------------------------------------------------
 
     def _handle_pico_message(self, msg: str, now: float) -> None:
         if not msg:
@@ -144,20 +142,16 @@ class InputManager:
                     self.rhythm.start_play_after_countdown(now)
                 except Exception as e:
                     print("[InputManager] rhythm.start_play_after_countdown error:", e)
+            return
 
-                # IMPORTANT:
-                # Do NOT send RHYTHM:LEVEL here.
-                # In the new Pico code.py, RHYTHM:LEVEL triggers countdown.
-                # Sending it again would restart countdown or mess up state.
-
-    # ------------------------------------------------------------------
-    # Event handling
-    # ------------------------------------------------------------------
+        if up.startswith("RHYTHM:BEST_SCORE_DONE"):
+            if self.current_mode == "rhythm":
+                print("[InputManager] Pico → RHYTHM:BEST_SCORE_DONE")
+                self._pico_best_score_done = True
+            return
 
     def handle_events(self, events: List[InputEvent], now: float) -> None:
-        # 1) Global events: mode switch / next mode / song-mode specific "next song" / NEXT_SF2
         for ev in events:
-            # Long press KEY_0: switch SoundFont
             if ev.type == EventType.NEXT_SF2:
                 audio = self._get_audio_engine()
                 if audio is not None:
@@ -175,7 +169,6 @@ class InputManager:
                 self._cycle_mode(now)
                 continue
 
-            # SONG mode: press KEY_3 (button) → next song (by playlist order)
             if (
                 self.current_mode == "song"
                 and ev.type == EventType.NOTE_ON
@@ -188,10 +181,6 @@ class InputManager:
                     print("[InputManager] song.skip_to_next error:", e)
                 continue
 
-            # Do not handle EventType.NEXT_SONG here, leave for MidiSongMode.handle_events()
-            # (e.g., keyboard input 'next')
-
-        # 2) Mode-specific event handling
         if self.current_mode == "menu":
             if hasattr(self.menu, "handle_events"):
                 self.menu.handle_events(events)
@@ -201,28 +190,23 @@ class InputManager:
             for ev in events:
                 if ev.type in (EventType.NOTE_ON, EventType.NOTE_OFF):
                     if getattr(ev, "source", None) == "button":
-                        # In piano mode, do not use button to play notes, only for mode switch / NEXT_SF2
                         continue
                 filtered.append(ev)
             if hasattr(self.piano, "handle_events"):
                 self.piano.handle_events(filtered)
 
         elif self.current_mode == "rhythm":
+            if self._rhythm_is_in_postgame():
+                return
             self._handle_rhythm_events(events, now)
 
         elif self.current_mode == "song":
             if hasattr(self.song, "handle_events"):
-                # Pass other events (e.g., keyboard 'next' → NEXT_SONG) to MidiSongMode
                 self.song.handle_events(events)
-
-    # ------------------------------------------------------------------
-    # Rhythm-specific events
-    # ------------------------------------------------------------------
 
     def _handle_rhythm_events(self, events: List[InputEvent], now: float) -> None:
         phase = getattr(self.rhythm, "phase", None)
 
-        # WAIT_COUNTDOWN: select difficulty
         if phase == "WAIT_COUNTDOWN":
             for ev in events:
                 if ev.type != EventType.NOTE_ON:
@@ -250,10 +234,6 @@ class InputManager:
 
                 print(f"[InputManager] Rhythm difficulty selected: {difficulty}")
 
-                # NEW FLOW:
-                # Send RHYTHM:LEVEL:<diff> to Pico.
-                # Pico will immediately start countdown and later print RHYTHM:COUNTDOWN_DONE.
-                # Do NOT send RHYTHM:COUNTDOWN anymore.
                 if self.pico_display is not None:
                     try:
                         self.pico_display.send_rhythm_level(difficulty)
@@ -261,10 +241,8 @@ class InputManager:
                         print("[InputManager] pico_display.send_rhythm_level error:", e)
 
                 return
-
             return
 
-        # PLAY: treat button press as hit
         if phase == "PLAY":
             button_events: List[InputEvent] = [
                 ev
@@ -276,45 +254,23 @@ class InputManager:
                 self.rhythm.handle_events(button_events)
             return
 
-        # DONE / others: do not handle events
-        return
-
-    # ------------------------------------------------------------------
-    # Rhythm post-game timeline (Pi controls the entire rhythm post-game sequence)
-    # ------------------------------------------------------------------
-
     def _maybe_run_rhythm_postgame_timeline(self, now: float) -> None:
-        """
-        After phase == DONE:
-
-            First time seeing DONE:
-                - Read score / max_score / difficulty
-                - Update high score
-                - Send CHALLENGE_FAIL or CHALLENGE_SUCCESS (first marquee)
-                - stage = "result_scroll"
-
-            Timeline:
-                "result_scroll" 5.5s  → send USER_SCORE_LABEL   (YOUR SCORE marquee)
-                "user_label"    4.0s  → send USER_SCORE        (show x/y)
-                "user_score"    3.0s  → send BEST_SCORE_LABEL  (BEST SCORE marquee)
-                "best_label"    4.0s  → send BEST_SCORE        (show best/y)
-                "best_score"    3.0s  → send BACK_TO_TITLE and reset rhythm()
-        """
         phase = getattr(self.rhythm, "phase", None)
 
         if phase != "DONE":
             self._rhythm_postgame_started = False
             self._rhythm_postgame_stage = None
+            self._pico_best_score_done = False
             return
 
         if self.pico_display is None:
             return
 
-        # ---- First time seeing DONE: initialize ----
         if not self._rhythm_postgame_started:
             self._rhythm_postgame_started = True
             self._rhythm_postgame_stage = "result_scroll"
             self._rhythm_postgame_t0 = now
+            self._pico_best_score_done = False
 
             score = getattr(self.rhythm, "score", 0)
             max_score = getattr(self.rhythm, "max_score", 0)
@@ -345,11 +301,9 @@ class InputManager:
 
             return
 
-        # ---- Afterward, control by stage + elapsed ----
         stage = self._rhythm_postgame_stage
         elapsed = now - self._rhythm_postgame_t0
 
-        # 1) FAIL / NEW RECORD! marquee
         if stage == "result_scroll":
             if elapsed >= 4.0:
                 try:
@@ -359,15 +313,11 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_label"
                 self._rhythm_postgame_t0 = now
 
-        # 2) YOUR SCORE marquee
         elif stage == "user_label":
             if elapsed >= 3.0:
                 score = self._rhythm_last_score
                 max_score = self._rhythm_last_max_score
-                if max_score > 0:
-                    user_text = f"{score}/{max_score}"
-                else:
-                    user_text = str(score)
+                user_text = f"{score}/{max_score}" if max_score > 0 else str(score)
                 try:
                     self.pico_display.send_rhythm_user_score(user_text)
                 except Exception as e:
@@ -375,7 +325,6 @@ class InputManager:
                 self._rhythm_postgame_stage = "user_score"
                 self._rhythm_postgame_t0 = now
 
-        # 3) Show user score static
         elif stage == "user_score":
             if elapsed >= 3.0:
                 try:
@@ -385,25 +334,25 @@ class InputManager:
                 self._rhythm_postgame_stage = "best_label"
                 self._rhythm_postgame_t0 = now
 
-        # 4) BEST SCORE marquee
         elif stage == "best_label":
-            if elapsed >= 3.0:
+            if elapsed >= 1.0:
                 best = self._rhythm_last_best
                 max_score = self._rhythm_last_max_score
-                if max_score > 0:
-                    best_text = f"{best}/{max_score}"
-                else:
-                    best_text = str(best)
+                best_text = f"{best}/{max_score}" if max_score > 0 else str(best)
                 try:
                     self.pico_display.send_rhythm_best_score(best_text)
                 except Exception as e:
                     print("[InputManager] pico_display.send_rhythm_best_score error:", e)
-                self._rhythm_postgame_stage = "best_score"
+                self._rhythm_postgame_stage = "best_score_wait_done"
                 self._rhythm_postgame_t0 = now
 
-        # 5) Show best score static → back to title + reset
-        elif stage == "best_score":
-            if elapsed >= 3.0:
+        elif stage == "best_score_wait_done":
+            if self._pico_best_score_done:
+                self._rhythm_postgame_stage = "pi_mode_colors_hold"
+                self._rhythm_postgame_t0 = now
+
+        elif stage == "pi_mode_colors_hold":
+            if elapsed >= float(self._pi_mode_colors_hold_sec):
                 try:
                     self.pico_display.send_rhythm_back_to_title()
                 except Exception as e:
@@ -416,20 +365,16 @@ class InputManager:
 
                 self._rhythm_postgame_started = False
                 self._rhythm_postgame_stage = None
-
-    # ------------------------------------------------------------------
-    # Per-frame update
-    # ------------------------------------------------------------------
+                self._pico_best_score_done = False
 
     def update(self, now: float) -> None:
-        # 1) Poll Pico messages every frame
+        # 1) Poll Pico messages
         if self.pico_display is not None:
             try:
                 messages = self.pico_display.poll_messages()
             except Exception as e:
                 print("[InputManager] pico_display.poll_messages error:", e)
                 messages = []
-
             for msg in messages:
                 self._handle_pico_message(msg, now)
 
@@ -443,10 +388,21 @@ class InputManager:
                 self.piano.update(now)
 
         elif self.current_mode == "rhythm":
-            if hasattr(self.rhythm, "update"):
-                self.rhythm.update(now)
-            # Rhythm post-game sequence
+            # ✅ 關鍵：post-game (phase==DONE) 時不要再呼叫 rhythm.update()
+            # 否則 RhythmMode(DONE) 每幀 clear_all()+show() 會跟我們 repaint 打架，造成閃爍
+            phase = getattr(self.rhythm, "phase", None)
+            in_postgame = (phase == "DONE" and self._rhythm_is_in_postgame())
+
+            if not in_postgame:
+                if hasattr(self.rhythm, "update"):
+                    self.rhythm.update(now)
+
+            # Post-game controller (仍要跑)
             self._maybe_run_rhythm_postgame_timeline(now)
+
+            # 在 hold 期間，由 InputManager 單獨輸出畫面（不給 RhythmMode 參與）
+            if self._rhythm_postgame_stage == "pi_mode_colors_hold":
+                self._render_pi_difficulty_colors()
 
         elif self.current_mode == "song":
             if hasattr(self.song, "update"):
