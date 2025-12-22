@@ -35,7 +35,7 @@ class InputManager:
         self._rhythm_postgame_stage: Optional[str] = None
         # stages:
         #   "result_scroll" → "user_label" → "user_score" → "best_label"
-        #   → "best_score_wait_done" → "pi_mode_colors_hold"
+        #   → "best_score_wait_done" → "pi_colors_during_title"
         self._rhythm_postgame_t0: float = 0.0
         self._rhythm_last_score: int = 0
         self._rhythm_last_best: int = 0
@@ -45,8 +45,9 @@ class InputManager:
         # Pico → Pi handshake:
         self._pico_best_score_done: bool = False
 
-        # How long to show Pi-controlled difficulty colors after best score is done
-        self._pi_mode_colors_hold_sec: float = 2
+        # ✅ Sync duration: how long Pi shows difficulty colors while Pico shows RYTHM.bmp
+        # Match Pico's RHYTHM_TITLE_HOLD_SEC (you showed it's 3.0s)
+        self._pi_colors_during_title_sec: float = 3.0
 
     @property
     def current_mode_name(self) -> str:
@@ -63,7 +64,7 @@ class InputManager:
         return bool(self._rhythm_postgame_started and self._rhythm_postgame_stage is not None)
 
     def _render_pi_difficulty_colors(self) -> None:
-        # Preferred: future public method
+        # Preferred: public method
         if hasattr(self.rhythm, "show_mode_colors"):
             try:
                 self.rhythm.show_mode_colors()
@@ -196,6 +197,7 @@ class InputManager:
                 self.piano.handle_events(filtered)
 
         elif self.current_mode == "rhythm":
+            # During post-game timeline, ignore inputs
             if self._rhythm_is_in_postgame():
                 return
             self._handle_rhythm_events(events, now)
@@ -335,6 +337,7 @@ class InputManager:
                 self._rhythm_postgame_t0 = now
 
         elif stage == "best_label":
+            # You set this short; OK as long as Pico doesn't queue BEST_SCORE behind marquee.
             if elapsed >= 1.0:
                 best = self._rhythm_last_best
                 max_score = self._rhythm_last_max_score
@@ -347,17 +350,21 @@ class InputManager:
                 self._rhythm_postgame_t0 = now
 
         elif stage == "best_score_wait_done":
+            # ✅ Key sync point: only when Pico tells us BEST score display finished
             if self._pico_best_score_done:
-                self._rhythm_postgame_stage = "pi_mode_colors_hold"
-                self._rhythm_postgame_t0 = now
-
-        elif stage == "pi_mode_colors_hold":
-            if elapsed >= float(self._pi_mode_colors_hold_sec):
+                # 1) Make Pico jump back to RYTHM.bmp immediately
                 try:
                     self.pico_display.send_rhythm_back_to_title()
                 except Exception as e:
                     print("[InputManager] pico_display.send_rhythm_back_to_title error:", e)
 
+                # 2) At the SAME time, start Pi difficulty colors overlay for exactly the title duration
+                self._rhythm_postgame_stage = "pi_colors_during_title"
+                self._rhythm_postgame_t0 = now
+
+        elif stage == "pi_colors_during_title":
+            # We don't call rhythm.reset yet; keep showing colors for the same duration as Pico's RYTHM.bmp
+            if elapsed >= float(self._pi_colors_during_title_sec):
                 try:
                     self.rhythm.reset(now)
                 except Exception as e:
@@ -388,20 +395,18 @@ class InputManager:
                 self.piano.update(now)
 
         elif self.current_mode == "rhythm":
-            # ✅ 關鍵：post-game (phase==DONE) 時不要再呼叫 rhythm.update()
-            # 否則 RhythmMode(DONE) 每幀 clear_all()+show() 會跟我們 repaint 打架，造成閃爍
+            # ✅ Post-game (phase==DONE) stage: do NOT call rhythm.update()
             phase = getattr(self.rhythm, "phase", None)
             in_postgame = (phase == "DONE" and self._rhythm_is_in_postgame())
-
             if not in_postgame:
                 if hasattr(self.rhythm, "update"):
                     self.rhythm.update(now)
 
-            # Post-game controller (仍要跑)
+            # Post-game controller (still runs)
             self._maybe_run_rhythm_postgame_timeline(now)
 
-            # 在 hold 期間，由 InputManager 單獨輸出畫面（不給 RhythmMode 參與）
-            if self._rhythm_postgame_stage == "pi_mode_colors_hold":
+            # ✅ During title sync window, ONLY InputManager drives Pi LEDs
+            if self._rhythm_postgame_stage == "pi_colors_during_title":
                 self._render_pi_difficulty_colors()
 
         elif self.current_mode == "song":

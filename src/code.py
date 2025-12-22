@@ -373,10 +373,6 @@ def _set_level_from_line(line: str):
         CURRENT_RHYTHM_LEVEL = None
 
 def _cmd_is_urgent(cmd_upper: str) -> bool:
-    """
-    Commands that must be allowed to override screen immediately.
-    These can break marquee/score locks.
-    """
     if cmd_upper == "LED:CLEAR":
         return True
     if cmd_upper.startswith("MODE:"):
@@ -384,6 +380,14 @@ def _cmd_is_urgent(cmd_upper: str) -> bool:
     if cmd_upper.startswith("RHYTHM:LEVEL:"):
         return True
     if cmd_upper.startswith("RHYTHM:COUNTDOWN"):
+        return True
+
+    # ✅ NEW: scores should override marquee lock
+    if cmd_upper.startswith("RHYTHM:USER_SCORE:"):
+        return True
+    if cmd_upper.startswith("RHYTHM:BEST_SCORE:"):
+        return True
+    if cmd_upper == "RHYTHM:BACK_TO_TITLE":
         return True
     return False
 
