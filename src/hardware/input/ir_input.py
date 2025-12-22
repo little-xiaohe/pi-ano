@@ -41,8 +41,8 @@ class IRInput:
 
     def __init__(
         self,
-        on_threshold_mm: int = 220,
-        off_threshold_mm: int = 260,
+        on_threshold_mm: int = 180,
+        off_threshold_mm: int = 240,
         debug: bool = False,
         default_velocity: float = 1.0,
         cooldown_sec: float = 0.05,
