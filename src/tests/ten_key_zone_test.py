@@ -29,8 +29,7 @@ MATRIX_WIDTH = 32
 MATRIX_HEIGHT = 16
 NUM_PIXELS = MATRIX_WIDTH * MATRIX_HEIGHT
 
-# PIN = board.D23 # change if your data pin is different
-PIN = board.D18 # change if your data pin is different
+PIN = board.D18 # Change if your data pin is different
 
 BRIGHTNESS = 0.03
 AUTO_WRITE = False
@@ -59,7 +58,7 @@ KEY_ZONES = [
     (28, 30),  # key 9
 ]
 
-# 10 明顯不同的顏色（R, G, B）
+# 10 clearly different colors (R, G, B)
 KEY_COLORS = [
     (255,   0,   0),  # red
     (255, 165,   0),  # orange
@@ -115,17 +114,17 @@ def clear_all():
 
 
 def draw_borders(color=(40, 40, 40)):
-    """畫左右兩條邊界（x = 0, x = 31）"""
+    """Draw the left and right borders (x = 0, x = 31)"""
     for y in range(MATRIX_HEIGHT):
         set_pixel(0, y, color)
         set_pixel(MATRIX_WIDTH - 1, y, color)
 
 
 def draw_key_blocks():
-    """把 10 個 key 區塊畫成 10 種顏色"""
+    """Draw the 10 key blocks in 10 different colors"""
     clear_all()
 
-    # optional: 畫左右灰色邊界，方便你肉眼看到範圍
+    # Optional: draw left and right gray borders for visual reference
     draw_borders(color=(20, 20, 20))
 
     for key_index, (x_start, x_end) in enumerate(KEY_ZONES):

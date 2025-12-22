@@ -48,9 +48,9 @@ class IRInput:
         cooldown_sec: float = 0.05,
         on_stable_frames: int = 1,
         off_stable_frames: int = 1,
-        timing_budget_us: int = 100_000,          # ✅ NEW
-        start_continuous: bool = True,            # ✅ NEW (you can turn it off if needed)
-        power_on_delay_s: float = 0.15,            # ✅ NEW (more stable than 0.05)
+        timing_budget_us: int = 50_000,         
+        start_continuous: bool = True,
+        power_on_delay_s: float = 0.15,
     ) -> None:
         self.debug = debug
         self.on_threshold_mm = on_threshold_mm
@@ -63,6 +63,7 @@ class IRInput:
         self.timing_budget_us = int(timing_budget_us)
         self.start_continuous = bool(start_continuous)
         self.power_on_delay_s = float(power_on_delay_s)
+        self.signal_rate_limit = 0.5
 
         # Keep references so sensors won't get GC'd and so we can stop continuous later
         self._sensors: List[adafruit_vl53l0x.VL53L0X] = []
@@ -121,15 +122,16 @@ class IRInput:
             sensor = adafruit_vl53l0x.VL53L0X(i2c)
             sensor.set_address(new_addr)
 
-            # ✅ Configure timing budget (microseconds)
+            # Configure timing budget (microseconds)
             # NOTE: 33_000us = 33ms, 200_000us = 200ms
             try:
                 sensor.measurement_timing_budget = self.timing_budget_us
+                sensor.signal_rate_limit = self.signal_rate_limit
             except Exception as e:
                 if self.debug:
                     print(f"[IR] Failed to set timing budget on sensor {idx}: {e}")
 
-            # ✅ Start continuous mode (optional)
+            # Start continuous mode (optional)
             if self.start_continuous:
                 try:
                     sensor.start_continuous()

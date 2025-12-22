@@ -432,7 +432,7 @@ class RhythmMode:
             return
 
         if self.phase == "DONE":
-            # ✅ DO NOTHING in DONE (avoid fighting with InputManager)
+            # DO NOTHING in DONE (avoid fighting with InputManager)
             return
 
         if self.play_start is None:
@@ -482,7 +482,7 @@ class RhythmMode:
         if song_time < last_time + TAIL_HOLD_SEC:
             return
 
-        # ✅ Enter DONE: clear LEDs ONCE
+        # Enter DONE: clear LEDs ONCE
         self.phase = "DONE"
         self.led.clear_all()
         self.led.show()

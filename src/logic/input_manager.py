@@ -45,7 +45,7 @@ class InputManager:
         # Pico → Pi handshake:
         self._pico_best_score_done: bool = False
 
-        # ✅ Sync duration: how long Pi shows difficulty colors while Pico shows RYTHM.bmp
+        # Sync duration: how long Pi shows difficulty colors while Pico shows RYTHM.bmp
         # Match Pico's RHYTHM_TITLE_HOLD_SEC (you showed it's 3.0s)
         self._pi_colors_during_title_sec: float = 3.0
 
@@ -350,7 +350,7 @@ class InputManager:
                 self._rhythm_postgame_t0 = now
 
         elif stage == "best_score_wait_done":
-            # ✅ Key sync point: only when Pico tells us BEST score display finished
+            # Key sync point: only when Pico tells us BEST score display finished
             if self._pico_best_score_done:
                 # 1) Make Pico jump back to RYTHM.bmp immediately
                 try:
@@ -395,7 +395,7 @@ class InputManager:
                 self.piano.update(now)
 
         elif self.current_mode == "rhythm":
-            # ✅ Post-game (phase==DONE) stage: do NOT call rhythm.update()
+            # Post-game (phase==DONE) stage: do NOT call rhythm.update()
             phase = getattr(self.rhythm, "phase", None)
             in_postgame = (phase == "DONE" and self._rhythm_is_in_postgame())
             if not in_postgame:
@@ -405,7 +405,7 @@ class InputManager:
             # Post-game controller (still runs)
             self._maybe_run_rhythm_postgame_timeline(now)
 
-            # ✅ During title sync window, ONLY InputManager drives Pi LEDs
+            # During title sync window, ONLY InputManager drives Pi LEDs
             if self._rhythm_postgame_stage == "pi_colors_during_title":
                 self._render_pi_difficulty_colors()
 

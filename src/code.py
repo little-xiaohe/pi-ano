@@ -149,7 +149,7 @@ MARQUEE_LOCK_UNTIL = 0.0     # while locked, non-urgent commands are queued
 
 # ---------------------------------------------------------------------------
 # Static score hold lock + BEST_SCORE_DONE ACK
-#   ✅ Split per-score hold time so ONLY BEST is 2 seconds
+# Split per-score hold time so ONLY BEST is 2 seconds
 # ---------------------------------------------------------------------------
 USER_SCORE_HOLD_SEC = 5.0
 BEST_SCORE_HOLD_SEC = 2.0
@@ -373,6 +373,10 @@ def _set_level_from_line(line: str):
         CURRENT_RHYTHM_LEVEL = None
 
 def _cmd_is_urgent(cmd_upper: str) -> bool:
+    """
+    Commands that must be allowed to override screen immediately.
+    These can break marquee/score locks.
+    """
     if cmd_upper == "LED:CLEAR":
         return True
     if cmd_upper.startswith("MODE:"):
@@ -380,14 +384,6 @@ def _cmd_is_urgent(cmd_upper: str) -> bool:
     if cmd_upper.startswith("RHYTHM:LEVEL:"):
         return True
     if cmd_upper.startswith("RHYTHM:COUNTDOWN"):
-        return True
-
-    # ✅ NEW: scores should override marquee lock
-    if cmd_upper.startswith("RHYTHM:USER_SCORE:"):
-        return True
-    if cmd_upper.startswith("RHYTHM:BEST_SCORE:"):
-        return True
-    if cmd_upper == "RHYTHM:BACK_TO_TITLE":
         return True
     return False
 

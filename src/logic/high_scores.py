@@ -9,14 +9,14 @@ from typing import Dict
 
 class HighScoreStore:
     """
-    簡單的節奏遊戲最高分儲存：
-      - 以 JSON 檔紀錄 easy / medium / hard 的最高分
-      - 分數型態：整數
+    Simple rhythm game high score storage:
+      - Stores the highest scores for easy / medium / hard in a JSON file
+      - Score type: integer
     """
 
     def __init__(self, path: str = "high_scores.json") -> None:
         self._path = Path(path)
-        # 預設 0 分（你也可以改成 None 代表「尚未遊玩」）
+        # Default to 0 points (you can also change to None to represent "not played yet")
         self._scores: Dict[str, int] = {
             "easy": 0,
             "medium": 0,
@@ -38,14 +38,14 @@ class HighScoreStore:
                     if k in data and isinstance(data[k], int):
                         self._scores[k] = data[k]
         except Exception:
-            # 檔案壞掉就忽略
+            # Ignore if the file is corrupted
             pass
 
     def _save(self) -> None:
         try:
             self._path.write_text(json.dumps(self._scores))
         except Exception:
-            # 儲存失敗就算了，不要讓遊戲掛掉
+            # Ignore save failure, don't crash the game
             pass
 
     # ----------------------------------------------------------
@@ -54,14 +54,14 @@ class HighScoreStore:
 
     def get_best(self, difficulty: str) -> int:
         """
-        取得該難度目前最高分（拿不到就回傳 0）。
+        Get the current high score for the given difficulty (returns 0 if not found).
         """
         return self._scores.get(difficulty, 0)
 
     def update_if_better(self, difficulty: str, new_score: int) -> bool:
         """
-        如果 new_score >= 舊紀錄，就更新並回傳 True（代表新紀錄）。
-        否則回傳 False。
+        If new_score >= old record, update and return True (means new record).
+        Otherwise, return False.
         """
         old = self._scores.get(difficulty, 0)
         if new_score >= old:

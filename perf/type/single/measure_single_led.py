@@ -33,7 +33,7 @@ from save_result import save_test_result  # noqa: E402
 
 # ----- Configuration -----
 NUM_PIXELS = 512           # Number of LEDs on the strip
-PIN = board.D23           # GPIO pin used for NeoPixel data (adjust if needed)
+PIN = board.D18           # GPIO pin used for NeoPixel data (adjust if needed)
 BRIGHTNESS = 0.3          # Global brightness setting for the strip
 N_SAMPLES = 500           # How many measurements to run
 SLEEP_INTERVAL = 0.02     # Delay between iterations (in seconds)
@@ -100,7 +100,7 @@ def main(run_id: str | None):
         t0 = time.monotonic_ns()
 
         # Turn all pixels ON (red) and show
-        full_on_random_same()
+        full_on_red()
 
         t1 = time.monotonic_ns()
         lat_ms = (t1 - t0) / 1e6  # ns -> ms

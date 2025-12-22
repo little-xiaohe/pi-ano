@@ -37,6 +37,9 @@ DETECTION_THRESHOLD_MM = 220
 # Continuous mode timing budget (microseconds)
 TIMING_BUDGET_US = 100_000  # try 100000 or 200000 for stability
 
+# Signal rate limit (MCPS - Mega Counts Per Second)
+SIGNAL_RATE_LIMIT = 0.5  # Higher value filters weak reflections
+
 POWER_ON_DELAY_S = 0.15
 LOOP_SLEEP_S = 0.05
 
@@ -94,11 +97,12 @@ def init_selected_sensors(i2c, active_sensors):
         sensor.set_address(new_addr)
 
         sensor.measurement_timing_budget = TIMING_BUDGET_US
+        sensor.signal_rate_limit = SIGNAL_RATE_LIMIT
         sensor.start_continuous()
 
         print(
             f"Sensor[{idx}] ON  addr=0x{new_addr:02X} | "
-            f"timing_budget={TIMING_BUDGET_US}us | continuous=ON"
+            f"timing_budget={TIMING_BUDGET_US}us | signal_limit={SIGNAL_RATE_LIMIT} MCPS | continuous=ON"
         )
 
         sensors[idx] = sensor
