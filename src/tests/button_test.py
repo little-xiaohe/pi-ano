@@ -4,12 +4,12 @@ import digitalio
 
 button = digitalio.DigitalInOut(board.D15)
 button.direction = digitalio.Direction.INPUT
-button.pull = digitalio.Pull.UP   # 使用內建上拉電阻
+button.pull = digitalio.Pull.UP   # Use built-in pull-up resistor
 
-print("按下按鈕試試看 (Ctrl+C 結束)")
+print("Press the button to test (Ctrl+C to exit)")
 
 while True:
-    if not button.value:   # LOW 代表按下
+    if not button.value:   # LOW means pressed
         print("Button pressed!")
         print("")
     else:

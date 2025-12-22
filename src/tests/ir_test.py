@@ -27,12 +27,13 @@ XSHUT_PINS = [
 
 BASE_ADDR = 0x30  # 0x30 ~ 0x34
 
-# 偵測門檻：距離小於這個值時才算「有感測到」
-DETECTION_THRESHOLD_MM = 220
+DETECTION_THRESHOLD_MM = 220  # Detection threshold: only considered detected if distance is less than this value
+
 
 # Continuous mode timing budget in microseconds.
 # 33000us = 33ms (NOT 200ms). Try 100000 (100ms) or 200000 (200ms) for more stability.
 TIMING_BUDGET_US = 100_000
+
 
 # More stable bring-up delay (multi-sensor)
 POWER_ON_DELAY_S = 0.15
