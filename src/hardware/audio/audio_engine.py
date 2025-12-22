@@ -14,7 +14,7 @@ from src.hardware.config.keys import KeyId
 # --------------------------------------------------------------------------------------
 SOUNDFONT_VOLUME: Dict[str, int] = {
     "00_piano.sf2": 110,   # Piano is louder, so lower the volume a bit
-    # "01_guitar.sf2": 127,  # Guitar is quieter, so set to max
+    "01_guitar.sf2": 110,  # Guitar is quieter, so set to max
 }
 
 
