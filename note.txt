@@ -1,4 +1,0 @@
-sudo apt install -y fluidsynth libfluidsynth-dev fluid-soundfont-gm
-pip install pyfluidsynth mido
-
-update
