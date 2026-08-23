@@ -129,5 +129,5 @@ Copy `src/pico/code.py`, `src/pico/fonts/`, and `src/pico/graphics/` to the Pico
 
 ## Contributors
 
-- [ASHLEY HUANG](https://github.com/little-xiaohe)
+- [ASHLEY HUANG](https://github.com/Ashuuuri)
 - [YI-CHIA WU](https://github.com/23dude)
